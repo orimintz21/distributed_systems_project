@@ -1,1 +1,6 @@
 *.pdf
+gen/
+bin/
+go.sum
+TUTORIAL.md
+.git
