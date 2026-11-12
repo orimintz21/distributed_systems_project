@@ -3,15 +3,6 @@
 // STEP 5 — Every HTTP handler translates the REST request into gRPC call(s),
 // and the gRPC reply (or error) back into a REST response:
 //
-//	client --HTTP/JSON--> Handlers --gRPC--> KVStore server (this node or a peer)
-//
-// Eight REST operations share three RPCs:
-//
-//	GET    /v1/keys, /v1/keys/{key}  -> Read   (server stream of entries)
-//	POST   /v1/keys, /v1/keys/{key}  -> Update (client stream, op = set)
-//	PATCH  /v1/keys, /v1/keys/{key}  -> Update (client stream, op = append|increment)
-//	DELETE /v1/keys, /v1/keys/{key}  -> Delete (client stream)
-//
 // Handlers hold NO application state. That is deliberate: in Parts II-III
 // the gRPC target becomes "the server responsible for this request", which
 // is exactly the forwarding required by the assignment.
@@ -23,19 +14,21 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/getkin/kin-openapi/openapi3filter"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	kvsv1 "github.com/your-team/kvs/gen/kvs/v1"
-	"github.com/your-team/kvs/gen/rest"
+	"github.com/orimintz21/distributed_systems_project/api"
+	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
+	"github.com/orimintz21/distributed_systems_project/gen/rest"
 )
 
 // Handlers implements rest.StrictServerInterface (one method per operationId).
 type Handlers struct {
-	KV kvsv1.KVStoreClient
+	Auction auctionv1.AuctionServiceClient
 }
 
 // Compile-time check: the build fails here if a method is missing or has the
@@ -43,8 +36,8 @@ type Handlers struct {
 var _ rest.StrictServerInterface = (*Handlers)(nil)
 
 // NewHTTPHandler wires the strict handlers into a net/http mux.
-func NewHTTPHandler(kv kvsv1.KVStoreClient, mux *http.ServeMux) http.Handler {
-	strict := rest.NewStrictHandlerWithOptions(&Handlers{KV: kv}, nil, rest.StrictHTTPServerOptions{
+func NewHTTPHandler(auctionClient auctionv1.AuctionServiceClient, mux *http.ServeMux) http.Handler {
+	strictHandler := rest.NewStrictHandlerWithOptions(&Handlers{Auction: auctionClient}, nil, rest.StrictHTTPServerOptions{
 		// Malformed requests (bad JSON, wrong parameter types) -> 400.
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
 			writeProblem(w, http.StatusBadRequest, err.Error())
@@ -54,292 +47,196 @@ func NewHTTPHandler(kv kvsv1.KVStoreClient, mux *http.ServeMux) http.Handler {
 			writeProblem(w, httpStatusFromGRPC(err), errorMessage(err))
 		},
 	})
-	return rest.HandlerFromMux(strict, mux)
+	apiSpec, err := openapi3.NewLoader().LoadFromData(api.Spec)
+	if err != nil {
+		panic(err) // The embedded API definition must be valid at startup.
+	}
+	return rest.HandlerWithOptions(strictHandler, rest.StdHTTPServerOptions{
+		BaseRouter: mux,
+		ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
+			writeProblem(w, http.StatusBadRequest, err.Error())
+		},
+		Middlewares: []rest.MiddlewareFunc{validateRequestBody(apiSpec)},
+	})
 }
 
 // ---------------------------------------------------------------------------
-// The example service (a key-value store). Replace it with your own service:
-// one method per operationId in your openapi.yaml.
+// HTTP handlers: one method per operationId in openapi.yaml.
 // ---------------------------------------------------------------------------
 
-// GET /v1/keys?key=..&key=.. | ?prefix=.. | ?from=..&to=..  [&sort=&limit=&keysOnly=]
-func (h *Handlers) GetKeys(ctx context.Context, req rest.GetKeysRequestObject) (rest.GetKeysResponseObject, error) {
-	p := req.Params
-	in := &kvsv1.ReadRequest{
-		Sort:        toProtoSort(p.Sort),
-		Limit:       deref(p.Limit),
-		KeysOnly:    deref(p.KeysOnly),
-		Consistency: toProtoConsistency(p.Consistency),
-	}
-	// At most one selector; none = all keys.
-	selectors := 0
-	if p.Key != nil {
-		selectors++
-		in.Select = &kvsv1.ReadRequest_Keys{Keys: &kvsv1.KeyList{Keys: *p.Key}}
-	}
-	if p.Prefix != nil {
-		selectors++
-		in.Select = &kvsv1.ReadRequest_Prefix{Prefix: *p.Prefix}
-	}
-	if p.From != nil || p.To != nil {
-		selectors++
-		in.Select = &kvsv1.ReadRequest_Range{Range: &kvsv1.KeyRange{From: deref(p.From), To: deref(p.To)}}
-	}
-	if selectors > 1 {
-		return nil, status.Error(codes.InvalidArgument, "give at most one of key, prefix, or from/to")
-	}
-
-	stream, err := h.KV.Read(ctx, in)
+// GET /v1/auctions
+func (h *Handlers) ListAuctions(ctx context.Context, req rest.ListAuctionsRequestObject) (rest.ListAuctionsResponseObject, error) {
+	consistency, err := toProtoConsistency(req.Params.Consistency)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := recvEntries(stream)
+	grpcRequest := &auctionv1.ListAuctionsRequest{Consistency: consistency}
+	if req.Params.Status != nil {
+		var statusFilter auctionv1.AuctionStatus
+		switch *req.Params.Status {
+		case rest.AuctionStatusOpen:
+			statusFilter = auctionv1.AuctionStatus_AUCTION_STATUS_OPEN
+		case rest.AuctionStatusClosed:
+			statusFilter = auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED
+		default:
+			return nil, status.Error(codes.InvalidArgument, "status must be open or closed")
+		}
+		grpcRequest.Status = &statusFilter
+	}
+	stream, err := h.Auction.ListAuctions(ctx, grpcRequest)
 	if err != nil {
-		return nil, err // mapped to an HTTP status by ResponseErrorHandlerFunc
+		return nil, err
 	}
-	return rest.GetKeys200JSONResponse{Entries: entries}, nil
-}
-
-// POST /v1/keys — set several keys in one atomic Update.
-func (h *Handlers) SetKeys(ctx context.Context, req rest.SetKeysRequestObject) (rest.SetKeysResponseObject, error) {
-	var ups []*kvsv1.UpdateRequest
-	for _, e := range req.Body.Entries {
-		ups = append(ups, &kvsv1.UpdateRequest{
-			Key: e.Key, Op: &kvsv1.UpdateRequest_Set{Set: e.Value}, IfVersion: e.IfVersion})
-	}
-	out, err := h.update(ctx, ups)
-	if err != nil {
-		return nil, err // FAILED_PRECONDITION -> 412
-	}
-	return rest.SetKeys200JSONResponse{Entries: entriesFromProto(out.GetEntries())}, nil
-}
-
-// PATCH /v1/keys — append/increment several keys in one atomic Update.
-func (h *Handlers) ModifyKeys(ctx context.Context, req rest.ModifyKeysRequestObject) (rest.ModifyKeysResponseObject, error) {
-	var ups []*kvsv1.UpdateRequest
-	for _, o := range req.Body.Ops {
-		u, err := modifyOp(o.Key, o.Append, o.Increment)
+	response := rest.ListAuctions200JSONResponse{Auctions: []rest.Auction{}}
+	for {
+		batch, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return response, nil
+		}
 		if err != nil {
 			return nil, err
 		}
-		u.IfVersion = o.IfVersion
-		ups = append(ups, u)
+		response.NodeId = batch.GetNodeId()
+		for _, auction := range batch.GetAuctions() {
+			response.Auctions = append(response.Auctions, auctionFromProto(auction))
+		}
 	}
-	out, err := h.update(ctx, ups)
-	if err != nil {
-		return nil, err
-	}
-	return rest.ModifyKeys200JSONResponse{Entries: entriesFromProto(out.GetEntries())}, nil
 }
 
-// DELETE /v1/keys?key=..&key=..
-func (h *Handlers) DeleteKeys(ctx context.Context, req rest.DeleteKeysRequestObject) (rest.DeleteKeysResponseObject, error) {
-	var dels []*kvsv1.DeleteRequest
-	for _, k := range req.Params.Key {
-		dels = append(dels, &kvsv1.DeleteRequest{Key: k})
+// POST /v1/auctions
+func (h *Handlers) CreateAuction(ctx context.Context, req rest.CreateAuctionRequestObject) (rest.CreateAuctionResponseObject, error) {
+	if req.Body == nil {
+		return nil, status.Error(codes.InvalidArgument, "request body is required")
 	}
-	out, err := h.delete(ctx, dels)
-	if err != nil {
-		return nil, err
-	}
-	return rest.DeleteKeys200JSONResponse{Deleted: out.GetDeleted()}, nil
-}
-
-// GET /v1/keys/{key} — a Read of one key; its first message is the entry.
-func (h *Handlers) GetKey(ctx context.Context, req rest.GetKeyRequestObject) (rest.GetKeyResponseObject, error) {
-	stream, err := h.KV.Read(ctx, &kvsv1.ReadRequest{
-		Select:      &kvsv1.ReadRequest_Key{Key: req.Key},
-		Consistency: toProtoConsistency(req.Params.Consistency),
+	response, err := h.Auction.CreateAuction(ctx, &auctionv1.CreateAuctionRequest{
+		Title: req.Body.Title, Description: req.Body.Description,
+		SellerName: req.Body.SellerName, StartingPrice: req.Body.StartingPrice,
 	})
 	if err != nil {
 		return nil, err
 	}
-	msg, err := stream.Recv()
-	if err != nil {
-		return nil, err // NOT_FOUND -> 404
-	}
-	e := msg.GetEntry()
-	return rest.GetKey200JSONResponse{
-		Body:    entryFromProto(e),
-		Headers: rest.GetKey200ResponseHeaders{ETag: ptr(etag(e.GetVersion()))}, // optional header -> *string
-	}, nil
+	return rest.CreateAuction201JSONResponse{Auction: auctionFromProto(response.GetAuction()), NodeId: response.GetNodeId()}, nil
 }
 
-// POST /v1/keys/{key} — an Update with one "set"; 201 if the key is new.
-func (h *Handlers) SetKey(ctx context.Context, req rest.SetKeyRequestObject) (rest.SetKeyResponseObject, error) {
-	ifVersion, err := versionFromIfMatch(req.Params.IfMatch)
+// GET /v1/auctions/{auctionId}
+func (h *Handlers) GetAuction(ctx context.Context, req rest.GetAuctionRequestObject) (rest.GetAuctionResponseObject, error) {
+	consistency, err := toProtoConsistency(req.Params.Consistency)
 	if err != nil {
 		return nil, err
 	}
-	out, err := h.update(ctx, []*kvsv1.UpdateRequest{{
-		Key: req.Key, Op: &kvsv1.UpdateRequest_Set{Set: req.Body.Value}, IfVersion: ifVersion}})
+	response, err := h.Auction.GetAuction(ctx, &auctionv1.GetAuctionRequest{AuctionId: req.AuctionId, Consistency: consistency})
 	if err != nil {
-		return nil, err // FAILED_PRECONDITION -> 412
+		return nil, err
 	}
-	e := entryFromProto(out.GetEntries()[0])
-	if out.GetCreated()[0] {
-		return rest.SetKey201JSONResponse(e), nil
-	}
-	return rest.SetKey200JSONResponse(e), nil
+	return rest.GetAuction200JSONResponse{Auction: auctionFromProto(response.GetAuction()), NodeId: response.GetNodeId()}, nil
 }
 
-// PATCH /v1/keys/{key} — an Update with one "append" or "increment".
-func (h *Handlers) ModifyKey(ctx context.Context, req rest.ModifyKeyRequestObject) (rest.ModifyKeyResponseObject, error) {
-	u, err := modifyOp(req.Key, req.Body.Append, req.Body.Increment)
+// PATCH /v1/auctions/{auctionId}
+func (h *Handlers) CloseAuction(ctx context.Context, req rest.CloseAuctionRequestObject) (rest.CloseAuctionResponseObject, error) {
+	if req.Body == nil || req.Body.Status != rest.CloseAuctionBodyStatusClosed {
+		return nil, status.Error(codes.InvalidArgument, "status must be closed")
+	}
+	response, err := h.Auction.CloseAuction(ctx, &auctionv1.CloseAuctionRequest{AuctionId: req.AuctionId, SellerName: req.Body.SellerName})
 	if err != nil {
 		return nil, err
 	}
-	if u.IfVersion, err = versionFromIfMatch(req.Params.IfMatch); err != nil {
-		return nil, err
-	}
-	out, err := h.update(ctx, []*kvsv1.UpdateRequest{u})
-	if err != nil {
-		return nil, err
-	}
-	return rest.ModifyKey200JSONResponse(entryFromProto(out.GetEntries()[0])), nil
+	return rest.CloseAuction200JSONResponse{Auction: auctionFromProto(response.GetAuction()), NodeId: response.GetNodeId()}, nil
 }
 
-// DELETE /v1/keys/{key}
-func (h *Handlers) DeleteKey(ctx context.Context, req rest.DeleteKeyRequestObject) (rest.DeleteKeyResponseObject, error) {
-	ifVersion, err := versionFromIfMatch(req.Params.IfMatch)
+// GET /v1/auctions/{auctionId}/bids
+func (h *Handlers) ListBids(ctx context.Context, req rest.ListBidsRequestObject) (rest.ListBidsResponseObject, error) {
+	consistency, err := toProtoConsistency(req.Params.Consistency)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := h.delete(ctx, []*kvsv1.DeleteRequest{{Key: req.Key, IfVersion: ifVersion}}); err != nil {
+	stream, err := h.Auction.ListBids(ctx, &auctionv1.ListBidsRequest{AuctionId: req.AuctionId, Consistency: consistency})
+	if err != nil {
 		return nil, err
 	}
-	return rest.DeleteKey204Response{}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Streams: how a handler drives the three RPCs
-// ---------------------------------------------------------------------------
-
-// recvEntries reads a Read stream to the end.
-func recvEntries(stream kvsv1.KVStore_ReadClient) ([]rest.Entry, error) {
-	entries := []rest.Entry{} // serialize as [] rather than null
+	response := rest.ListBids200JSONResponse{Bids: []rest.Bid{}}
 	for {
-		msg, err := stream.Recv()
-		if errors.Is(err, io.EOF) { // the server finished sending
-			return entries, nil
+		batch, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return response, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, entryFromProto(msg.GetEntry()))
+		response.NodeId = batch.GetNodeId()
+		for _, bid := range batch.GetBids() {
+			response.Bids = append(response.Bids, bidFromProto(bid))
+		}
 	}
 }
 
-// update sends every request on one Update stream, then closes it; the
-// server applies the batch atomically and answers once.
-func (h *Handlers) update(ctx context.Context, ups []*kvsv1.UpdateRequest) (*kvsv1.UpdateResponse, error) {
-	stream, err := h.KV.Update(ctx)
+// POST /v1/auctions/{auctionId}/bids
+func (h *Handlers) PlaceBid(ctx context.Context, req rest.PlaceBidRequestObject) (rest.PlaceBidResponseObject, error) {
+	if req.Body == nil {
+		return nil, status.Error(codes.InvalidArgument, "request body is required")
+	}
+	response, err := h.Auction.PlaceBid(ctx, &auctionv1.PlaceBidRequest{
+		AuctionId: req.AuctionId, BidderName: req.Body.BidderName, Amount: req.Body.Amount,
+	})
 	if err != nil {
 		return nil, err
 	}
-	for _, u := range ups {
-		if err := stream.Send(u); err != nil {
-			break // the server ended the call early; CloseAndRecv returns why
-		}
-	}
-	return stream.CloseAndRecv()
-}
-
-// delete works like update, on a Delete stream.
-func (h *Handlers) delete(ctx context.Context, dels []*kvsv1.DeleteRequest) (*kvsv1.DeleteResponse, error) {
-	stream, err := h.KV.Delete(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, d := range dels {
-		if err := stream.Send(d); err != nil {
-			break
-		}
-	}
-	return stream.CloseAndRecv()
+	return rest.PlaceBid201JSONResponse{Bid: bidFromProto(response.GetBid()), NodeId: response.GetNodeId()}, nil
 }
 
 // ---------------------------------------------------------------------------
-// Helpers: REST <-> protobuf conversions and error mapping
+// Helpers: request validation, REST <-> protobuf conversions and error mapping
 // ---------------------------------------------------------------------------
 
-// modifyOp builds a read-modify-write UpdateRequest; exactly one operand.
-func modifyOp(key string, appendS *string, increment *int64) (*kvsv1.UpdateRequest, error) {
-	u := &kvsv1.UpdateRequest{Key: key}
-	switch {
-	case appendS != nil && increment == nil:
-		u.Op = &kvsv1.UpdateRequest_Append{Append: *appendS}
-	case increment != nil && appendS == nil:
-		u.Op = &kvsv1.UpdateRequest_Increment{Increment: *increment}
-	default:
-		return nil, status.Errorf(codes.InvalidArgument, "key %q: give exactly one of append or increment", key)
+// Generated decoding checks types, but not required fields or nulls.
+func validateRequestBody(apiSpec *openapi3.T) rest.MiddlewareFunc {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Use the matched route's method: GET routes also accept HEAD requests.
+			method, path, _ := strings.Cut(r.Pattern, " ")
+			operation := apiSpec.Paths.Value(path).GetOperation(method)
+			if operation.RequestBody != nil {
+				validationInput := &openapi3filter.RequestValidationInput{Request: r}
+				if err := openapi3filter.ValidateRequestBody(r.Context(), validationInput, operation.RequestBody.Value); err != nil {
+					writeProblem(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
-	return u, nil
 }
 
-// Generic so it works whether the generator types the parameter as
-// rest.Consistency or as a type derived from it.
-func toProtoConsistency[T ~string](c *T) kvsv1.Consistency {
-	if c != nil && string(*c) == "linearizable" {
-		return kvsv1.Consistency_CONSISTENCY_LINEARIZABLE
+func toProtoConsistency(consistency *rest.Consistency) (auctionv1.Consistency, error) {
+	if consistency == nil || *consistency == rest.Sequential {
+		return auctionv1.Consistency_CONSISTENCY_SEQUENTIAL, nil
 	}
-	return kvsv1.Consistency_CONSISTENCY_SEQUENTIAL // the documented default
+	if *consistency == rest.Linearizable {
+		return auctionv1.Consistency_CONSISTENCY_LINEARIZABLE, nil
+	}
+	return 0, status.Error(codes.InvalidArgument, "consistency must be sequential or linearizable")
 }
 
-// toProtoSort turns "version" / "-version" into a SortOrder.
-func toProtoSort[T ~string](s *T) *kvsv1.SortOrder {
-	if s == nil {
-		return nil // default: by key, ascending
+func auctionFromProto(auction *auctionv1.Auction) rest.Auction {
+	response := rest.Auction{
+		Id: auction.GetId(), Title: auction.GetTitle(), Description: auction.GetDescription(),
+		SellerName: auction.GetSellerName(), StartingPrice: auction.GetStartingPrice(),
+		WinnerName: auction.WinnerName,
 	}
-	name, desc := strings.CutPrefix(string(*s), "-")
-	o := &kvsv1.SortOrder{Descending: desc}
-	switch name {
-	case "value":
-		o.Field = kvsv1.SortOrder_FIELD_VALUE
-	case "version":
-		o.Field = kvsv1.SortOrder_FIELD_VERSION
-	default:
-		o.Field = kvsv1.SortOrder_FIELD_KEY
+	switch auction.GetStatus() {
+	case auctionv1.AuctionStatus_AUCTION_STATUS_OPEN:
+		response.Status = rest.AuctionStatusOpen
+	case auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED:
+		response.Status = rest.AuctionStatusClosed
 	}
-	return o
+	if auction.GetHighestBid() != nil {
+		bid := bidFromProto(auction.GetHighestBid())
+		response.HighestBid = &bid
+	}
+	return response
 }
 
-func entryFromProto(e *kvsv1.Entry) rest.Entry {
-	return rest.Entry{Key: e.GetKey(), Value: e.GetValue(), Version: e.GetVersion()}
-}
-
-func entriesFromProto(es []*kvsv1.Entry) []rest.Entry {
-	out := make([]rest.Entry, 0, len(es))
-	for _, e := range es {
-		out = append(out, entryFromProto(e))
-	}
-	return out
-}
-
-// An ETag is the version in quotes, e.g. "3".
-func etag(version int64) string { return strconv.Quote(strconv.FormatInt(version, 10)) }
-
-// versionFromIfMatch parses an If-Match header; nil means "no condition".
-func versionFromIfMatch(h *string) (*int64, error) {
-	if h == nil || *h == "" {
-		return nil, nil
-	}
-	s := strings.Trim(strings.TrimPrefix(*h, "W/"), `"`)
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "If-Match %q is not a version", *h)
-	}
-	return &v, nil
-}
-
-func ptr[T any](v T) *T { return &v }
-
-func deref[T any](p *T) T {
-	var zero T
-	if p == nil {
-		return zero
-	}
-	return *p
+func bidFromProto(bid *auctionv1.Bid) rest.Bid {
+	return rest.Bid{Id: bid.GetId(), AuctionId: bid.GetAuctionId(), BidderName: bid.GetBidderName(), Amount: bid.GetAmount()}
 }
 
 // httpStatusFromGRPC is the single place where gRPC status codes become HTTP
@@ -356,10 +253,10 @@ func httpStatusFromGRPC(err error) int {
 		return http.StatusNotFound // 404
 	case codes.InvalidArgument:
 		return http.StatusBadRequest // 400
+	case codes.PermissionDenied:
+		return http.StatusForbidden // 403
 	case codes.FailedPrecondition:
-		return http.StatusPreconditionFailed // 412: If-Match / ifVersion differs
-	case codes.Unimplemented:
-		return http.StatusNotImplemented // 501
+		return http.StatusConflict // 409: closed auction or insufficient bid
 	case codes.Unavailable:
 		return http.StatusServiceUnavailable // 503
 	case codes.DeadlineExceeded:
@@ -370,19 +267,19 @@ func httpStatusFromGRPC(err error) int {
 }
 
 func errorMessage(err error) string {
-	if st, ok := status.FromError(err); ok {
-		return st.Message()
+	if grpcStatus, ok := status.FromError(err); ok {
+		return grpcStatus.Message()
 	}
 	return err.Error()
 }
 
-// writeProblem writes an RFC 9457 problem-details body.
-func writeProblem(w http.ResponseWriter, code int, detail string) {
+func writeProblem(w http.ResponseWriter, statusCode int, detail string) {
 	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(code)
+	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(rest.Problem{
-		Title:  http.StatusText(code),
-		Status: code,
-		Detail: &detail,
+		Type:   "about:blank",
+		Title:  http.StatusText(statusCode),
+		Status: statusCode,
+		Detail: detail,
 	})
 }

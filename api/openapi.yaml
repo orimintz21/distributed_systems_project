@@ -1,262 +1,207 @@
 openapi: 3.0.3
-# ---------------------------------------------------------------------------
-# STEP 1 — Service semantics as an OpenAPI document.
-#
-# Edit this file in the Swagger Editor (/editor once the server runs, or
-# https://editor.swagger.io) and fix every warning. Then `make gen-rest`.
-#
-# This file describes the running EXAMPLE, a key-value store. Students do
-# not implement it: replace it with your own service, keeping the structure:
-#   * every operation has an operationId  -> becomes a Go method name
-#   * reusable pieces live in components (schemas, parameters, responses)
-#   * reads take a `consistency` query parameter
-#   * errors are application/problem+json (RFC 9457)
-# ---------------------------------------------------------------------------
 info:
-  title: Replicated Key-Value Store
-  version: 2.0.0
+  title: Auction House
+  version: 1.0.0
   description: |
-    Client-facing RESTful API of the replicated key-value store.
+    Client-facing RESTful API of the auction house.
 
     * Reads accept `?consistency=sequential|linearizable` (default: sequential).
       All writes are linearizable.
-    * Every entry has a `version`; `GET /v1/keys/{key}` returns it as the
-      `ETag`. Send it back in `If-Match` to write only if nothing changed in
-      between (412 otherwise).
-    * **POST** sets values. **PATCH** modifies them with a read-modify-write
-      operation (`append` or `increment`).
+    * **GET** reads auctions and bid history. **POST** creates auctions or
+      places bids. **PATCH** closes an auction.
+    * Request and success response bodies use `application/json`.
+      Errors use `application/problem+json` (RFC 9457).
 servers:
   - url: /
     description: The server that serves this page (use with /docs)
   - url: http://localhost:8080
     description: Node n1 (from Swagger Editor/UI containers; needs -cors-origin)
 tags:
-  - name: keys
-    description: Several keys at once (atomic)
-  - name: key
-    description: One key
+  - name: auctions
+    description: Auction creation, inspection, and explicit closing
+  - name: bids
+    description: Accepted bids and bid history
 
 paths:
-  /v1/keys:
-    get:
-      tags: [keys]
-      operationId: getKeys
-      summary: Read several keys, sorted
+  /v1/auctions:
+    post:
+      tags: [auctions]
+      operationId: createAuction
+      summary: Create an auction
       description: |
-        Select keys with at most one of `key` (repeatable), `prefix`, or
-        `from`/`to` (range [from, to)). No selector = all keys.
-        Missing keys are skipped.
-      parameters:
-        - name: key
-          in: query
-          required: false
-          description: Repeat for several keys (?key=a&key=b)
-          schema:
-            type: array
-            items: { type: string }
-          style: form
-          explode: true
-        - name: prefix
-          in: query
-          required: false
-          schema: { type: string }
-        - name: from
-          in: query
-          required: false
-          schema: { type: string }
-        - name: to
-          in: query
-          required: false
-          schema: { type: string }
-        - $ref: '#/components/parameters/Sort'
-        - name: limit
-          in: query
-          required: false
-          description: Maximum number of entries (0 or absent = no limit)
-          schema: { type: integer, format: int32, minimum: 0 }
-        - name: keysOnly
-          in: query
-          required: false
-          description: Return only the keys (values empty)
-          schema: { type: boolean, default: false }
-        - $ref: '#/components/parameters/Consistency'
-      responses:
-        '200':
-          description: The entries, in sort order
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/EntryList' }
-        '400': { $ref: '#/components/responses/Problem' }
-    post:
-      tags: [keys]
-      operationId: setKeys
-      summary: Set several keys atomically
-      description: All or nothing. 412 if any `ifVersion` differs.
+        Assign a unique auction ID and return an open auction with no highest
+        bid and no winner.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/SetKeysBody' }
+            schema: { $ref: '#/components/schemas/CreateAuctionBody' }
       responses:
-        '200':
-          description: The entries after the write, in request order
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/EntryList' }
-        '400': { $ref: '#/components/responses/Problem' }
-        '412': { $ref: '#/components/responses/Problem' }
-    patch:
-      tags: [keys]
-      operationId: modifyKeys
-      summary: Append to or increment several keys atomically (read-modify-write)
-      description: All or nothing. 412 if any `ifVersion` differs.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ModifyKeysBody' }
-      responses:
-        '200':
-          description: The entries after the operation, in request order
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/EntryList' }
-        '400': { $ref: '#/components/responses/Problem' }
-        '412': { $ref: '#/components/responses/Problem' }
-    delete:
-      tags: [keys]
-      operationId: deleteKeys
-      summary: Delete several keys atomically
-      parameters:
-        - name: key
-          in: query
-          required: true
-          description: Repeat for several keys (?key=a&key=b)
-          schema:
-            type: array
-            items: { type: string }
-            minItems: 1
-          style: form
-          explode: true
-      responses:
-        '200':
-          description: How many of the keys existed
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/DeleteResult' }
-        '400': { $ref: '#/components/responses/Problem' }
-
-  /v1/keys/{key}:
-    parameters:
-      - $ref: '#/components/parameters/Key'
-    get:
-      tags: [key]
-      operationId: getKey
-      summary: Read one key
-      parameters:
-        - $ref: '#/components/parameters/Consistency'
-      responses:
-        '200':
-          description: The entry
-          headers:
-            ETag: { $ref: '#/components/headers/ETag' }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Entry' }
-        '404': { $ref: '#/components/responses/Problem' }
-    post:
-      tags: [key]
-      operationId: setKey
-      summary: Set one key (create or replace)
-      parameters:
-        - $ref: '#/components/parameters/IfMatch'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/SetBody' }
-      responses:
-        '200':
-          description: Replaced; the entry after the write
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Entry' }
         '201':
-          description: Created; the new entry
+          description: The newly created open auction
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Entry' }
+              schema: { $ref: '#/components/schemas/AuctionReply' }
         '400': { $ref: '#/components/responses/Problem' }
-        '412': { $ref: '#/components/responses/Problem' }
-    patch:
-      tags: [key]
-      operationId: modifyKey
-      summary: Append to or increment one key (read-modify-write)
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '504': { $ref: '#/components/responses/Problem' }
+    get:
+      tags: [auctions]
+      operationId: listAuctions
+      summary: List auctions
       description: |
-        Give exactly one of `append` (missing key = "") or `increment`
-        (missing key = 0; the value must be an integer).
+        Return auctions ordered numerically by auction ID, optionally filtered
+        by status. No matches produce an empty array, not an error.
       parameters:
-        - $ref: '#/components/parameters/IfMatch'
+        - name: status
+          in: query
+          required: false
+          description: Return only auctions with this status; omit for all auctions
+          schema: { $ref: '#/components/schemas/AuctionStatus' }
+        - $ref: '#/components/parameters/Consistency'
+      responses:
+        '200':
+          description: Matching auctions, ordered numerically by auction ID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuctionListReply' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '504': { $ref: '#/components/responses/Problem' }
+
+  /v1/auctions/{auctionId}:
+    parameters:
+      - $ref: '#/components/parameters/AuctionId'
+    get:
+      tags: [auctions]
+      operationId: getAuction
+      summary: Get an auction
+      description: |
+        Return the auction, including its highest accepted bid and final
+        winner, if any.
+      parameters:
+        - $ref: '#/components/parameters/Consistency'
+      responses:
+        '200':
+          description: The auction and its current bidding result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuctionReply' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '504': { $ref: '#/components/responses/Problem' }
+    patch:
+      tags: [auctions]
+      operationId: closeAuction
+      summary: Close an auction
+      description: |
+        The supplied seller name must match the auction's seller name (403
+        otherwise). Mark the auction closed and finalize the
+        highest accepted bidder as the winner. Without bids, the winner is null.
+
+        Repeating a close request with the correct seller name returns the
+        existing result without changing it. Closed auctions cannot reopen.
+        PATCH supports only the transition to closed, not general field editing.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ModifyBody' }
+            schema: { $ref: '#/components/schemas/CloseAuctionBody' }
       responses:
         '200':
-          description: The entry after the operation
+          description: The closed auction, including for a repeated close request
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Entry' }
+              schema: { $ref: '#/components/schemas/AuctionReply' }
         '400': { $ref: '#/components/responses/Problem' }
-        '412': { $ref: '#/components/responses/Problem' }
-    delete:
-      tags: [key]
-      operationId: deleteKey
-      summary: Delete one key
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '504': { $ref: '#/components/responses/Problem' }
+
+  /v1/auctions/{auctionId}/bids:
+    parameters:
+      - $ref: '#/components/parameters/AuctionId'
+    get:
+      tags: [bids]
+      operationId: listBids
+      summary: List accepted bids
+      description: |
+        Return accepted bids in acceptance order. Rejected bids are never
+        recorded. An existing auction without bids returns an empty array;
+        an unknown auction ID returns 404.
       parameters:
-        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/Consistency'
       responses:
-        '204':
-          description: Deleted (also returned if the key did not exist)
-        '412': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Accepted bids in acceptance order
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BidListReply' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '504': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [bids]
+      operationId: placeBid
+      summary: Place a bid
+      description: |
+        The auction must exist and be open. The bidder name must differ from
+        the seller name (400 otherwise). The first bid must be at least the
+        starting price; subsequent bids must strictly exceed the highest bid.
+        A closed auction or an insufficient bid returns 409.
+
+        An accepted bid is added to history and becomes the highest bid;
+        a rejected bid changes nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceBidBody' }
+      responses:
+        '201':
+          description: The newly accepted bid
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BidReply' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '504': { $ref: '#/components/responses/Problem' }
 
 components:
   parameters:
-    Key:
-      name: key
+    AuctionId:
+      name: auctionId
       in: path
       required: true
-      schema: { type: string }
+      description: |
+        Unsigned 64-bit auction ID written in decimal. Negative, non-integer,
+        and out-of-range values return 400.
+      schema: { $ref: '#/components/schemas/UInt64' }
     Consistency:
       name: consistency
       in: query
       required: false
+      description: Read consistency; unsupported values return 400
       schema: { $ref: '#/components/schemas/Consistency' }
-    Sort:
-      name: sort
-      in: query
-      required: false
-      description: Sort field; prefix `-` for descending. Ties break by key.
-      schema:
-        type: string
-        enum: [key, -key, value, -value, version, -version]
-        default: key
-    IfMatch:
-      name: If-Match
-      in: header
-      required: false
-      description: Write only if the entry's ETag (version) equals this
-      schema: { type: string }
-
-  headers:
-    ETag:
-      description: The entry's version, quoted (e.g. "3")
-      schema: { type: string }
 
   responses:
     Problem:
-      description: Error (RFC 9457 problem details)
+      description: |
+        RFC 9457 problem details. 400 indicates a malformed or invalid request;
+        403 a seller name mismatch; 404 an unknown auction; 409 a closed auction
+        or insufficient bid; 500 an unexpected server failure; 503 an unavailable
+        gRPC service; and 504 an exceeded request deadline.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -267,88 +212,140 @@ components:
       enum: [sequential, linearizable]
       default: sequential
 
-    Entry:
-      type: object
-      required: [key, value, version]
-      properties:
-        key: { type: string }
-        value: { type: string }
-        version:
-          type: integer
-          format: int64
-          description: Incremented on every write of this key
+    AuctionStatus:
+      type: string
+      enum: [open, closed]
 
-    EntryList:
+    # uint64 is a custom OpenAPI format. Explicit bounds describe the wire
+    # contract; x-go-type keeps Go code generation unsigned and full-width.
+    UInt64:
+      type: integer
+      format: uint64
+      minimum: 0
+      maximum: 18446744073709551615
+      x-go-type: uint64
+      description: Unsigned 64-bit integer
+      example: 1
+
+    Price:
+      type: integer
+      format: uint64
+      minimum: 1
+      maximum: 18446744073709551615
+      x-go-type: uint64
+      description: Positive amount in integer cents
+      example: 1000
+
+    Auction:
       type: object
-      required: [entries]
+      required: [id, title, description, sellerName, startingPrice, status, highestBid, winnerName]
       properties:
-        entries:
+        id: { $ref: '#/components/schemas/UInt64' }
+        title: { type: string }
+        description: { type: string }
+        sellerName: { type: string }
+        startingPrice: { $ref: '#/components/schemas/Price' }
+        status: { $ref: '#/components/schemas/AuctionStatus' }
+        # Expand the Bid shape so nullable applies directly to an object.
+        # In OpenAPI 3.0, nullable alongside a $ref would be ignored.
+        highestBid:
+          type: object
+          nullable: true
+          x-go-type: Bid
+          description: Highest accepted bid; null before any bid
+          required: [id, auctionId, bidderName, amount]
+          properties:
+            id: { $ref: '#/components/schemas/UInt64' }
+            auctionId: { $ref: '#/components/schemas/UInt64' }
+            bidderName: { type: string }
+            amount: { $ref: '#/components/schemas/Price' }
+        winnerName:
+          type: string
+          nullable: true
+          description: Highest bidder when closed; null while open or if closed without bids
+
+    Bid:
+      type: object
+      required: [id, auctionId, bidderName, amount]
+      properties:
+        id: { $ref: '#/components/schemas/UInt64' }
+        auctionId: { $ref: '#/components/schemas/UInt64' }
+        bidderName: { type: string }
+        amount: { $ref: '#/components/schemas/Price' }
+
+    CreateAuctionBody:
+      type: object
+      required: [title, description, sellerName, startingPrice]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        sellerName: { type: string }
+        startingPrice: { $ref: '#/components/schemas/Price' }
+
+    PlaceBidBody:
+      type: object
+      required: [bidderName, amount]
+      properties:
+        bidderName: { type: string }
+        amount: { $ref: '#/components/schemas/Price' }
+
+    CloseAuctionBody:
+      type: object
+      required: [sellerName, status]
+      properties:
+        sellerName: { type: string }
+        status:
+          type: string
+          enum: [closed]
+          description: Only explicit closing is supported
+
+    AuctionReply:
+      type: object
+      required: [auction, nodeId]
+      properties:
+        auction: { $ref: '#/components/schemas/Auction' }
+        nodeId:
+          type: string
+          description: ID of the gRPC node that served the operation
+
+    AuctionListReply:
+      type: object
+      required: [auctions, nodeId]
+      properties:
+        auctions:
           type: array
-          items: { $ref: '#/components/schemas/Entry' }
+          description: Auctions ordered numerically by ID; empty array if none match
+          items: { $ref: '#/components/schemas/Auction' }
+        nodeId:
+          type: string
+          description: ID of the gRPC node that served the operation
 
-    SetBody:
+    BidReply:
       type: object
-      required: [value]
+      required: [bid, nodeId]
       properties:
-        value: { type: string }
+        bid: { $ref: '#/components/schemas/Bid' }
+        nodeId:
+          type: string
+          description: ID of the gRPC node that served the operation
 
-    ModifyBody:
+    BidListReply:
       type: object
-      description: Exactly one of `append` or `increment`
+      required: [bids, nodeId]
       properties:
-        append: { type: string }
-        increment: { type: integer, format: int64 }
-
-    SetKeysBody:
-      type: object
-      required: [entries]
-      properties:
-        entries:
+        bids:
           type: array
-          minItems: 1
-          items:
-            type: object
-            required: [key, value]
-            properties:
-              key: { type: string }
-              value: { type: string }
-              ifVersion:
-                type: integer
-                format: int64
-                description: Write only if the version equals this (0 = must not exist)
-
-    ModifyKeysBody:
-      type: object
-      required: [ops]
-      properties:
-        ops:
-          type: array
-          minItems: 1
-          items:
-            type: object
-            required: [key]
-            description: Exactly one of `append` or `increment`
-            properties:
-              key: { type: string }
-              append: { type: string }
-              increment: { type: integer, format: int64 }
-              ifVersion:
-                type: integer
-                format: int64
-
-    DeleteResult:
-      type: object
-      required: [deleted]
-      properties:
-        deleted:
-          type: integer
-          format: int32
+          description: Accepted bids in acceptance order; empty array if no bids exist
+          items: { $ref: '#/components/schemas/Bid' }
+        nodeId:
+          type: string
+          description: ID of the gRPC node that served the operation
 
     Problem:
       type: object
-      required: [title, status]
+      required: [type, title, detail, status]
       properties:
-        type: { type: string, default: about:blank }
-        title: { type: string, description: Short summary, e.g. "Not Found" }
-        status: { type: integer, description: The HTTP status code }
+        type: { type: string, default: 'about:blank' }
+        title: { type: string, description: Short summary of the error }
         detail: { type: string, description: What went wrong in this case }
+        status: { type: integer, description: The HTTP status code }

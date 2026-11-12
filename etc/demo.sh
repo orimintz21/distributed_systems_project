@@ -1,30 +1,72 @@
 #!/usr/bin/env sh
-# Smoke test of the key-value EXAMPLE (replace with calls to your service).
-# Start `make run` (and optionally `make run2`) first.
-# Usage: ./etc/demo.sh [base-url]     default: http://localhost:8080
+# Start `make run`, then run ./etc/demo.sh (node n1).
+# Start `make run2`, then run ./etc/demo.sh http://localhost:8081 (forwarded to n1).
+# Fixtures: 1=open with bids, 2=closed with bids, 3=open without bids,
+# 4=closed without bids; seller name is "seller". Writes are not persisted.
+set -eu
 B=${1:-http://localhost:8080}
 J='Content-Type: application/json'
-set -x
-# --- reads: GET -> Read ---------------------------------------------------
-curl -si "$B/v1/keys/alpha?consistency=linearizable" | grep -iE '^(HTTP|etag)|^\{' # 200 + ETag
-curl -si "$B/v1/keys/missing" | head -1                               # 404
-curl -s  "$B/v1/keys?key=gamma&key=alpha&key=missing&sort=-key"       ; echo  # missing skipped
-curl -s  "$B/v1/keys?prefix=a&keysOnly=true&limit=2"                   ; echo
-curl -si "$B/v1/keys?key=alpha&prefix=a" | head -1                    # 400: two selectors
-# --- set: POST -> Update(set) ---------------------------------------------
-curl -si -X POST "$B/v1/keys/alpha"   -H "$J" -d '{"value":"42"}' | head -1   # 200 replaced
-curl -si -X POST "$B/v1/keys/missing" -H "$J" -d '{"value":"42"}' | head -1   # 201 created
-curl -si -X POST "$B/v1/keys/alpha"   -H "$J" -H 'If-Match: "7"' -d '{"value":"x"}' | head -1  # 412
-curl -s  -X POST "$B/v1/keys" -H "$J" -d '{"entries":[{"key":"a","value":"1"},{"key":"b","value":"2"}]}' ; echo
-# --- read-modify-write: PATCH -> Update(append|increment) -----------------
-curl -s  -X PATCH "$B/v1/keys/counter" -H "$J" -d '{"increment":1}'    ; echo
-curl -s  -X PATCH "$B/v1/keys/log"     -H "$J" -d '{"append":"!"}'     ; echo
-curl -si -X PATCH "$B/v1/keys/log"     -H "$J" -d '{}' | head -1       # 400: no operand
-curl -s  -X PATCH "$B/v1/keys" -H "$J" -d '{"ops":[{"key":"c","increment":5},{"key":"l","append":"x"}]}' ; echo
-# --- delete: DELETE -> Delete ---------------------------------------------
-curl -si -X DELETE "$B/v1/keys/alpha" | head -1                       # 204
-curl -s  -X DELETE "$B/v1/keys?key=alpha&key=missing"                 ; echo  # {"deleted":1}
-# --- docs -----------------------------------------------------------------
-curl -s  "$B/openapi.yaml" | head -3
-curl -si "$B/docs"   | head -1                                        # Swagger UI (open in a browser)
-curl -si "$B/editor" | head -1                                        # Swagger Editor (open in a browser)
+BODY=$(mktemp)
+trap 'rm -f "$BODY"' EXIT
+
+# Display and verify each HTTP status and its JSON response body.
+expect() {
+  want=$1 method=$2 path=$3
+  shift 3
+  got=$(curl -sS -o "$BODY" -w '%{http_code}' -X "$method" "$B$path" "$@")
+  printf '\n%s %s -> %s (expected %s)\n' "$method" "$path" "$got" "$want"
+  cat "$BODY"
+  printf '\n'
+  if [ "$got" != "$want" ]; then
+    printf 'Unexpected status code\n' >&2
+    exit 1
+  fi
+}
+
+# CreateAuction: 201, invalid fields/malformed body -> 400.
+expect 201 POST /v1/auctions -H "$J" -d '{"title":"Book","description":"Hardcover","sellerName":"seller","startingPrice":1000}'
+expect 400 POST /v1/auctions -H "$J" -d '{"title":"Book","description":"Hardcover","sellerName":"seller","startingPrice":0}'
+expect 400 POST /v1/auctions -H "$J" -d '{"startingPrice":1000}'
+expect 400 POST /v1/auctions -H "$J" -d '{bad json'
+
+# ListAuctions: 200, unsupported filter or consistency -> 400.
+expect 200 GET '/v1/auctions?consistency=linearizable'
+expect 200 GET '/v1/auctions?status=open'
+expect 200 GET '/v1/auctions?status=closed'
+expect 400 GET '/v1/auctions?status=unknown'
+expect 400 GET '/v1/auctions?consistency=unknown'
+
+# GetAuction: 200, invalid ID or consistency -> 400, missing auction -> 404.
+expect 200 GET /v1/auctions/1
+expect 200 GET /v1/auctions/3
+expect 400 GET /v1/auctions/-1
+expect 400 GET /v1/auctions/18446744073709551616
+expect 400 GET '/v1/auctions/1?consistency=unknown'
+expect 404 GET /v1/auctions/999
+
+# ListBids: 200 (including []), invalid ID/consistency -> 400, missing -> 404.
+expect 200 GET /v1/auctions/1/bids
+expect 200 GET /v1/auctions/3/bids
+expect 400 GET /v1/auctions/not-a-number/bids
+expect 400 GET '/v1/auctions/1/bids?consistency=unknown'
+expect 404 GET /v1/auctions/999/bids
+
+# PlaceBid: 201, invalid fields/seller bidding -> 400, missing -> 404,
+# closed auction or insufficient amount -> 409.
+expect 201 POST /v1/auctions/1/bids -H "$J" -d '{"bidderName":"new-bidder","amount":2500}'
+expect 201 POST /v1/auctions/3/bids -H "$J" -d '{"bidderName":"new-bidder","amount":1000}'
+expect 400 POST /v1/auctions/1/bids -H "$J" -d '{"bidderName":"seller","amount":2500}'
+expect 400 POST /v1/auctions/1/bids -H "$J" -d '{"bidderName":"new-bidder","amount":0}'
+expect 404 POST /v1/auctions/999/bids -H "$J" -d '{"bidderName":"new-bidder","amount":2500}'
+expect 409 POST /v1/auctions/2/bids -H "$J" -d '{"bidderName":"new-bidder","amount":2500}'
+expect 409 POST /v1/auctions/1/bids -H "$J" -d '{"bidderName":"new-bidder","amount":2000}'
+expect 409 POST /v1/auctions/3/bids -H "$J" -d '{"bidderName":"new-bidder","amount":999}'
+
+# CloseAuction: 200 (including repeated close and no winner), invalid body ->
+# 400, seller mismatch -> 403, missing auction -> 404.
+expect 200 PATCH /v1/auctions/1 -H "$J" -d '{"sellerName":"seller","status":"closed"}'
+expect 200 PATCH /v1/auctions/2 -H "$J" -d '{"sellerName":"seller","status":"closed"}'
+expect 200 PATCH /v1/auctions/3 -H "$J" -d '{"sellerName":"seller","status":"closed"}'
+expect 400 PATCH /v1/auctions/1 -H "$J" -d '{"sellerName":"seller","status":"open"}'
+expect 403 PATCH /v1/auctions/1 -H "$J" -d '{"sellerName":"other","status":"closed"}'
+expect 404 PATCH /v1/auctions/999 -H "$J" -d '{"sellerName":"seller","status":"closed"}'

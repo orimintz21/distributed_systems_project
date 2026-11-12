@@ -1,0 +1,114 @@
+// The internal auction service. Generate Go bindings with `make gen-proto`.
+syntax = "proto3";
+
+package auction.v1;
+option go_package = "github.com/orimintz21/distributed_systems_project/gen/auction/v1;auctionv1";
+
+service AuctionService {
+  rpc CreateAuction(CreateAuctionRequest) returns (CreateAuctionResponse);
+  rpc ListAuctions(ListAuctionsRequest) returns (stream ListAuctionsResponse);
+  rpc GetAuction(GetAuctionRequest) returns (GetAuctionResponse);
+  rpc ListBids(ListBidsRequest) returns (stream ListBidsResponse);
+  rpc PlaceBid(PlaceBidRequest) returns (PlaceBidResponse);
+  rpc CloseAuction(CloseAuctionRequest) returns (CloseAuctionResponse);
+}
+
+enum Consistency {
+  CONSISTENCY_UNSPECIFIED = 0; // Default to sequential reads.
+  CONSISTENCY_SEQUENTIAL = 1;
+  CONSISTENCY_LINEARIZABLE = 2;
+}
+
+enum AuctionStatus {
+  AUCTION_STATUS_UNSPECIFIED = 0; // Not a valid stored auction status.
+  AUCTION_STATUS_OPEN = 1;
+  AUCTION_STATUS_CLOSED = 2;
+}
+
+message Auction {
+  uint64 id = 1;
+  string title = 2;
+  string description = 3;
+  string seller_name = 4;
+  uint64 starting_price = 5; // Positive integer cents.
+  AuctionStatus status = 6;
+  Bid highest_bid = 7; // Absent before any accepted bid; maps to JSON null in REST.
+  optional string winner_name = 8; // Absent while open or closed without bids.
+}
+
+message Bid {
+  uint64 id = 1;
+  uint64 auction_id = 2;
+  string bidder_name = 3;
+  uint64 amount = 4; // Positive integer cents.
+}
+
+message CreateAuctionRequest {
+  string title = 1;
+  string description = 2;
+  string seller_name = 3;
+  uint64 starting_price = 4; // Must be greater than zero.
+}
+
+message CreateAuctionResponse {
+  Auction auction = 1;
+  string node_id = 2;
+}
+
+message ListAuctionsRequest {
+  // Absent means all auctions. If present, only OPEN or CLOSED is valid.
+  optional AuctionStatus status = 1;
+  Consistency consistency = 2;
+}
+
+// Batches remain ordered across the entire stream. With no matches, send one
+// empty batch so the REST handler can still obtain node_id for its response.
+message ListAuctionsResponse {
+  repeated Auction auctions = 1;
+  string node_id = 2;
+}
+
+message GetAuctionRequest {
+  uint64 auction_id = 1;
+  Consistency consistency = 2;
+}
+
+message GetAuctionResponse {
+  Auction auction = 1;
+  string node_id = 2;
+}
+
+message ListBidsRequest {
+  uint64 auction_id = 1;
+  Consistency consistency = 2;
+}
+
+// Batches preserve acceptance order across the entire stream. An existing
+// auction without bids produces one empty batch containing node_id.
+message ListBidsResponse {
+  repeated Bid bids = 1;
+  string node_id = 2;
+}
+
+message PlaceBidRequest {
+  uint64 auction_id = 1;
+  string bidder_name = 2;
+  uint64 amount = 3; // Must be greater than zero.
+}
+
+message PlaceBidResponse {
+  Bid bid = 1;
+  string node_id = 2;
+}
+
+message CloseAuctionRequest {
+  uint64 auction_id = 1;
+  string seller_name = 2;
+  // REST's status=closed is validated by the HTTP handler. The RPC name
+  // already specifies the requested transition, so no status field is needed.
+}
+
+message CloseAuctionResponse {
+  Auction auction = 1;
+  string node_id = 2;
+}

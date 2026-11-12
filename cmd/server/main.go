@@ -22,10 +22,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
 
-	"github.com/your-team/kvs/api"
-	kvsv1 "github.com/your-team/kvs/gen/kvs/v1"
-	"github.com/your-team/kvs/internal/grpcsvc"
-	"github.com/your-team/kvs/internal/httpapi"
+	"github.com/orimintz21/distributed_systems_project/api"
+	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
+	"github.com/orimintz21/distributed_systems_project/internal/grpcsvc"
+	"github.com/orimintz21/distributed_systems_project/internal/httpapi"
 )
 
 func main() {
@@ -45,7 +45,7 @@ func main() {
 		log.Fatalf("listen %s: %v", *grpcAddr, err)
 	}
 	gs := grpc.NewServer()
-	kvsv1.RegisterKVStoreServer(gs, grpcsvc.New(*id))
+	auctionv1.RegisterAuctionServiceServer(gs, grpcsvc.New(*id))
 	reflection.Register(gs) // lets you poke the server with grpcurl
 	go func() {
 		log.Printf("[%s] gRPC listening on %s", *id, *grpcAddr)
@@ -82,7 +82,7 @@ func main() {
 	})
 	hs := &http.Server{
 		Addr:              *httpAddr,
-		Handler:           withCORS(*corsOrigin, httpapi.NewHTTPHandler(kvsv1.NewKVStoreClient(conn), mux)),
+		Handler:           withCORS(*corsOrigin, httpapi.NewHTTPHandler(auctionv1.NewAuctionServiceClient(conn), mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -120,10 +120,9 @@ func withCORS(origin string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
-		h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-		h.Set("Access-Control-Allow-Headers", "Content-Type, If-Match")
-		h.Set("Access-Control-Expose-Headers", "ETag") // let browser tools read it
-		if r.Method == http.MethodOptions {            // preflight
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions { // preflight
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
