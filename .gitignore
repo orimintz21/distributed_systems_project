@@ -4,3 +4,7 @@ bin/
 go.sum
 TUTORIAL.md
 .git
+repo.url
+students.json
+*.zip
+*.docx
