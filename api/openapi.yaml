@@ -101,7 +101,7 @@ paths:
       description: |
         The supplied seller name must match the auction's seller name (403
         otherwise). Mark the auction closed and finalize the
-        highest accepted bidder as the winner. Without bids, the winner is null.
+        highest accepted bidder as the winner. Without bids, winnerName is omitted.
 
         Repeating a close request with the correct seller name returns the
         existing result without changing it. Closed auctions cannot reopen.
@@ -238,7 +238,8 @@ components:
 
     Auction:
       type: object
-      required: [id, title, description, sellerName, startingPrice, status, highestBid, winnerName]
+      description: highestBid is omitted until a bid is accepted.
+      required: [id, title, description, sellerName, startingPrice, status]
       properties:
         id: { $ref: '#/components/schemas/UInt64' }
         title: { type: string }
@@ -246,23 +247,11 @@ components:
         sellerName: { type: string }
         startingPrice: { $ref: '#/components/schemas/Price' }
         status: { $ref: '#/components/schemas/AuctionStatus' }
-        # Expand the Bid shape so nullable applies directly to an object.
-        # In OpenAPI 3.0, nullable alongside a $ref would be ignored.
         highestBid:
-          type: object
-          nullable: true
-          x-go-type: Bid
-          description: Highest accepted bid; null before any bid
-          required: [id, auctionId, bidderName, amount]
-          properties:
-            id: { $ref: '#/components/schemas/UInt64' }
-            auctionId: { $ref: '#/components/schemas/UInt64' }
-            bidderName: { type: string }
-            amount: { $ref: '#/components/schemas/Price' }
+          $ref: '#/components/schemas/Bid'
         winnerName:
           type: string
-          nullable: true
-          description: Highest bidder when closed; null while open or if closed without bids
+          description: Highest bidder when closed; omitted while open or if closed without bids
 
     Bid:
       type: object

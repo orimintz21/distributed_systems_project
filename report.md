@@ -24,8 +24,8 @@ There are two domain objects: auctions and accepted bids.
 | `sellerName` | string | Name of the seller |
 | `startingPrice` | uint64 | Minimum first bid, in integer cents |
 | `status` | `open` or `closed` | Whether bidding is permitted |
-| `highestBid` | Bid or null | Highest accepted bid; null before any bid |
-| `winnerName` | string or null | Name of the highest bidder when closed; otherwise null |
+| `highestBid` | Bid (optional) | Highest accepted bid; omitted before any bid |
+| `winnerName` | string (optional) | Name of the highest bidder when closed; otherwise omitted |
 
 | Bid field | Type | Meaning |
 |---|---|---|
@@ -108,8 +108,8 @@ general editing of auction fields.
 
 ### 3.2 Request and response schemas
 
-All listed fields are required: fields explicitly marked nullable in the object
-definitions may contain JSON `null`.
+All listed fields are required except `Auction.highestBid` and
+`Auction.winnerName`, which are omitted when they have no value.
 
 #### Request bodies
 

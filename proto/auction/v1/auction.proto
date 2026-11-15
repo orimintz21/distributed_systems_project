@@ -32,7 +32,7 @@ message Auction {
   string seller_name = 4;
   uint64 starting_price = 5; // Positive integer cents.
   AuctionStatus status = 6;
-  Bid highest_bid = 7; // Absent before any accepted bid; maps to JSON null in REST.
+  Bid highest_bid = 7; // Absent before any accepted bid; omitted in REST when absent.
   optional string winner_name = 8; // Absent while open or closed without bids.
 }
 
