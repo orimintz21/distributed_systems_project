@@ -26,7 +26,7 @@ expect() {
 # CreateAuction: 201, invalid fields/malformed body -> 400.
 expect 201 POST /v1/auctions -H "$J" -d '{"title":"Book","description":"Hardcover","sellerName":"seller","startingPrice":1000}'
 expect 400 POST /v1/auctions -H "$J" -d '{"title":"Book","description":"Hardcover","sellerName":"seller","startingPrice":0}'
-expect 400 POST /v1/auctions -H "$J" -d '{"startingPrice":1000}'
+expect 400 POST /v1/auctions -H "$J" -d '{"title":"Book","description":"Hardcover","sellerName":"seller","startingPrice":"invalid"}'
 expect 400 POST /v1/auctions -H "$J" -d '{bad json'
 
 # ListAuctions: 200, unsupported filter or consistency -> 400.

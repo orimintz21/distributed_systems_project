@@ -14,14 +14,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 
-	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/getkin/kin-openapi/openapi3filter"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/orimintz21/distributed_systems_project/api"
 	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
 	"github.com/orimintz21/distributed_systems_project/gen/rest"
 )
@@ -47,16 +43,11 @@ func NewHTTPHandler(auctionClient auctionv1.AuctionServiceClient, mux *http.Serv
 			writeProblem(w, httpStatusFromGRPC(err), errorMessage(err))
 		},
 	})
-	apiSpec, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		panic(err) // The embedded API definition must be valid at startup.
-	}
 	return rest.HandlerWithOptions(strictHandler, rest.StdHTTPServerOptions{
 		BaseRouter: mux,
 		ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
 			writeProblem(w, http.StatusBadRequest, err.Error())
 		},
-		Middlewares: []rest.MiddlewareFunc{validateRequestBody(apiSpec)},
 	})
 }
 
@@ -184,27 +175,8 @@ func (h *Handlers) PlaceBid(ctx context.Context, req rest.PlaceBidRequestObject)
 }
 
 // ---------------------------------------------------------------------------
-// Helpers: request validation, REST <-> protobuf conversions and error mapping
+// Helpers: REST <-> protobuf conversions and error mapping
 // ---------------------------------------------------------------------------
-
-// Generated decoding checks types, but not required fields or nulls.
-func validateRequestBody(apiSpec *openapi3.T) rest.MiddlewareFunc {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Use the matched route's method: GET routes also accept HEAD requests.
-			method, path, _ := strings.Cut(r.Pattern, " ")
-			operation := apiSpec.Paths.Value(path).GetOperation(method)
-			if operation.RequestBody != nil {
-				validationInput := &openapi3filter.RequestValidationInput{Request: r}
-				if err := openapi3filter.ValidateRequestBody(r.Context(), validationInput, operation.RequestBody.Value); err != nil {
-					writeProblem(w, http.StatusBadRequest, err.Error())
-					return
-				}
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
 
 func toProtoConsistency(consistency *rest.Consistency) (auctionv1.Consistency, error) {
 	if consistency == nil || *consistency == rest.Sequential {
