@@ -17,7 +17,7 @@ design does not include a user registry, authentication, payments, or delivery.
 There are two domain objects: auctions and accepted bids.
 
 | Auction field | Type | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `id` | uint64 | Unique auction identifier assigned by the service |
 | `title` | string | Short name of the item |
 | `description` | string | Description of the item |
@@ -28,7 +28,7 @@ There are two domain objects: auctions and accepted bids.
 | `winnerName` | string (optional) | Name of the highest bidder when closed; otherwise omitted |
 
 | Bid field | Type | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `id` | uint64 | Identifier assigned by the service |
 | `auctionId` | uint64 | Auction receiving the bid |
 | `bidderName` | string | Name of the person placing the bid |
@@ -76,7 +76,7 @@ in the eventual replicated execution determines whether the bid is accepted.
 ## 2. Operation categories and consistency
 
 | Operation | Category | Required consistency |
-|---|---|---|
+| --- | --- | --- |
 | Create auction | State-changing write | Linearizable |
 | List auctions | Read | Client chooses sequential or linearizable (Default: sequential) |
 | Get auction | Read | Client chooses sequential or linearizable (Default: sequential) |
@@ -84,7 +84,7 @@ in the eventual replicated execution determines whether the bid is accepted.
 | Place bid | Read-modify-write | Linearizable |
 | Close auction | Read-modify-write | Linearizable |
 
-## 3. Proposed REST API
+## 3. REST API
 
 ### 3.1 Operations
 
@@ -95,7 +95,7 @@ described above. HTTP handlers translate requests and responses without holding
 application state.
 
 | Method and path | operationId | Parameters | Request body | Success response | Operation-specific errors |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | `POST /v1/auctions` | `createAuction` | None | `CreateAuctionBody` | 201: `AuctionReply` | 400: invalid fields |
 | `GET /v1/auctions` | `listAuctions` | Optional `status`; `consistency` | None | 200: `AuctionListReply` | 400: unsupported filter or consistency |
 | `GET /v1/auctions/{auctionId}` | `getAuction` | `auctionId`; `consistency` | None | 200: `AuctionReply` | 400: invalid auction ID or consistency; 404: auction missing |
@@ -104,7 +104,7 @@ application state.
 | `PATCH /v1/auctions/{auctionId}` | `closeAuction` | `auctionId` | `CloseAuctionBody` | 200: `AuctionReply`, including repeated close | 400: invalid fields; 403: seller name mismatch; 404: auction missing |
 
 `PATCH` only supports the documented transition to `closed`, it does not provide
-general editing of auction fields. 
+general editing of auction fields.
 
 ### 3.2 Request and response schemas
 
@@ -114,7 +114,7 @@ All listed fields are required except `Auction.highestBid` and
 #### Request bodies
 
 | Schema | Fields |
-|---|---|
+| --- | --- |
 | `CreateAuctionBody` | `title`, `description`, `sellerName`: strings; `startingPrice`: uint64 |
 | `PlaceBidBody` | `bidderName`: string; `amount`: uint64 |
 | `CloseAuctionBody` | `sellerName`: string; `status`: the literal `closed` |
@@ -122,7 +122,7 @@ All listed fields are required except `Auction.highestBid` and
 #### Response bodies
 
 | Schema | Fields |
-|---|---|
+| --- | --- |
 | `AuctionReply` | `auction`: Auction; `nodeId`: string |
 | `AuctionListReply` | `auctions`: array of Auction; `nodeId`: string |
 | `BidReply` | `bid`: Bid; `nodeId`: string |
@@ -134,8 +134,8 @@ All listed fields are required except `Auction.highestBid` and
 All error responses use `application/problem+json` with the `Problem` schema.
 Every operation may return 500, 503, or 504; malformed requests return 400.
 
-| gRPC status | HTTP status | Meaning in the proposed service |
-|---|---|---|
+| gRPC status | HTTP status | Meaning in the service |
+| --- | --- | --- |
 | `INVALID_ARGUMENT` | 400 | Invalid request fields or seller attempting to bid |
 | `PERMISSION_DENIED` | 403 | Supplied seller name does not match when closing |
 | `NOT_FOUND` | 404 | Auction does not exist |
@@ -146,17 +146,21 @@ Every operation may return 500, 503, or 504; malformed requests return 400.
 
 ## 4. REST-to-RPC mapping
 
-The proposed auction gRPC service handles creation, reads, bidding, and closing.
+The `auction.v1.AuctionService` gRPC service handles creation, reads, bidding,
+and closing. Every RPC has its own request message and response message.
 Each REST handler calls the corresponding RPC and translates its result to the
 response documented in Section 3. Read operations pass the client's consistency
 choice. Errors use gRPC status codes, translated according to Section 3.3.
 
-`ListAuctions` and `ListBids` use server streaming, with one item per response
-message. Empty results produce one message containing only `nodeId`. The HTTP
+The four non-list RPCs are unary. `ListAuctions` and `ListBids` use server
+streaming, with one item per response message. Empty results produce one message
+containing only `nodeId`. The HTTP
 handler collects the complete stream into the corresponding JSON list response.
+If receiving the stream fails, the handler returns the mapped error instead of
+a partial successful response.
 
 | REST operation | RPC |
-|---|---|
+| --- | --- |
 | `createAuction` | `CreateAuction` |
 | `listAuctions` | `ListAuctions` |
 | `getAuction` | `GetAuction` |
@@ -170,3 +174,28 @@ handler collects the complete stream into the corresponding JSON list response.
   eventual state machine an explicit close command to order against bids.
 - **Strictly increasing bids:** prevent tied winning bids and give a simple
   state-dependent condition for the required read-modify-write operation.
+
+## 6. Architecture and Part I implementation
+
+Each server process runs an HTTP server, a gRPC server, and a gRPC client. The
+generated HTTP code routes requests and decodes parameters and JSON bodies. The
+strict HTTP handlers construct protobuf requests, call the gRPC service, and
+convert its results into the generated REST response types. Handlers hold only
+the gRPC client, with no application maps or counters.
+
+For example, `GET /v1/auctions/1` reaches `Handlers.GetAuction`, which converts
+the consistency option and calls `AuctionService.GetAuction`. `Server.GetAuction`
+looks up auction 1 in the dummy fixtures. The HTTP handler uses
+`auctionFromProto` to return an `AuctionReply` containing the auction and the
+answering node's ID. RPC errors are translated by `httpStatusFromGRPC` and
+encoded by `writeProblem`.
+
+| Feature | Implementation location |
+| --- | --- |
+| REST specification and generated routing | `api/openapi.yaml`, `api/oapi-codegen.yaml`; generated code in `gen/rest/rest.gen.go` |
+| Internal API and generated gRPC bindings | `proto/auction/v1/auction.proto`; generated code in `gen/auction/v1/` |
+| REST-to-RPC calls and response conversion | `internal/httpapi/handlers.go`: the six `Handlers` methods, `auctionFromProto`, and `bidFromProto` |
+| Read consistency option and HTTP error mapping | `internal/httpapi/handlers.go`: `toProtoConsistency`, `httpStatusFromGRPC`, and `writeProblem` |
+| Dummy data and business rules | `internal/grpcsvc/server.go`: `dummyAuctions`, `dummyBids`, and the six `Server` RPC methods |
+| Server registration and forwarding target | `cmd/server/main.go`: `main` |
+| Regeneration and build | `Makefile`: `gen-rest`, `gen-proto`, and `build` |
