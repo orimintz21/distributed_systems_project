@@ -151,6 +151,10 @@ Each REST handler calls the corresponding RPC and translates its result to the
 response documented in Section 3. Read operations pass the client's consistency
 choice. Errors use gRPC status codes, translated according to Section 3.3.
 
+`ListAuctions` and `ListBids` use server streaming, with one item per response
+message. Empty results produce one message containing only `nodeId`. The HTTP
+handler collects the complete stream into the corresponding JSON list response.
+
 | REST operation | RPC |
 |---|---|
 | `createAuction` | `CreateAuction` |

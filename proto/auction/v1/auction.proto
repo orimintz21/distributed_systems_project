@@ -61,10 +61,10 @@ message ListAuctionsRequest {
   Consistency consistency = 2;
 }
 
-// Batches remain ordered across the entire stream. With no matches, send one
-// empty batch so the REST handler can still obtain node_id for its response.
+// One auction per message, ordered by auction ID. With no matches, send one
+// message containing only node_id.
 message ListAuctionsResponse {
-  repeated Auction auctions = 1;
+  Auction auction = 1;
   string node_id = 2;
 }
 
@@ -83,10 +83,10 @@ message ListBidsRequest {
   Consistency consistency = 2;
 }
 
-// Batches preserve acceptance order across the entire stream. An existing
-// auction without bids produces one empty batch containing node_id.
+// One bid per message, in acceptance order. An existing auction without bids
+// produces one message containing only node_id.
 message ListBidsResponse {
-  repeated Bid bids = 1;
+  Bid bid = 1;
   string node_id = 2;
 }
 

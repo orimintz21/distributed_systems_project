@@ -107,13 +107,13 @@ func (s *Server) ListAuctions(req *auctionv1.ListAuctionsRequest, stream auction
 		}
 		sentAuctions = true
 		if err := stream.Send(&auctionv1.ListAuctionsResponse{
-			Auctions: []*auctionv1.Auction{auction}, NodeId: s.NodeID,
+			Auction: auction, NodeId: s.NodeID,
 		}); err != nil {
 			return err
 		}
 	}
 	if !sentAuctions {
-		// Empty streams still need a batch identifying the responding node.
+		// Empty results still need a message identifying the responding node.
 		return stream.Send(&auctionv1.ListAuctionsResponse{NodeId: s.NodeID})
 	}
 	return nil
@@ -144,7 +144,7 @@ func (s *Server) ListBids(req *auctionv1.ListBidsRequest, stream auctionv1.Aucti
 	}
 	for _, bid := range bids {
 		if err := stream.Send(&auctionv1.ListBidsResponse{
-			Bids: []*auctionv1.Bid{bid}, NodeId: s.NodeID,
+			Bid: bid, NodeId: s.NodeID,
 		}); err != nil {
 			return err
 		}

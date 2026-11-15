@@ -80,15 +80,15 @@ func (h *Handlers) ListAuctions(ctx context.Context, req rest.ListAuctionsReques
 	}
 	response := rest.ListAuctions200JSONResponse{Auctions: []rest.Auction{}}
 	for {
-		batch, err := stream.Recv()
+		message, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			return response, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		response.NodeId = batch.GetNodeId()
-		for _, auction := range batch.GetAuctions() {
+		response.NodeId = message.GetNodeId()
+		if auction := message.GetAuction(); auction != nil {
 			response.Auctions = append(response.Auctions, auctionFromProto(auction))
 		}
 	}
@@ -146,15 +146,15 @@ func (h *Handlers) ListBids(ctx context.Context, req rest.ListBidsRequestObject)
 	}
 	response := rest.ListBids200JSONResponse{Bids: []rest.Bid{}}
 	for {
-		batch, err := stream.Recv()
+		message, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			return response, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		response.NodeId = batch.GetNodeId()
-		for _, bid := range batch.GetBids() {
+		response.NodeId = message.GetNodeId()
+		if bid := message.GetBid(); bid != nil {
 			response.Bids = append(response.Bids, bidFromProto(bid))
 		}
 	}
