@@ -1,19 +1,22 @@
 #!/usr/bin/env sh
 # Start `make run`, then run ./etc/demo.sh (node n1).
 # Start `make run2`, then run ./etc/demo.sh http://localhost:8081 (forwarded to n1).
+# After stopping n1, run ./etc/demo.sh http://localhost:8081 --unavailable.
+# Set EXPECTED_NODE_ID to also check which gRPC node answered successful calls.
 # Fixtures: 1=open with bids, 2=closed with bids, 3=open without bids,
 # 4=closed without bids; seller name is "seller". Writes are not persisted.
 set -eu
 B=${1:-http://localhost:8080}
 J='Content-Type: application/json'
 BODY=$(mktemp)
-trap 'rm -f "$BODY"' EXIT
+HEADERS=$(mktemp)
+trap 'rm -f "$BODY" "$HEADERS"' EXIT
 
-# Display and verify each HTTP status and its JSON response body.
+# Verify each HTTP status and display the response body.
 expect() {
   want=$1 method=$2 path=$3
   shift 3
-  got=$(curl -sS -o "$BODY" -w '%{http_code}' -X "$method" "$B$path" "$@")
+  got=$(curl -sS -D "$HEADERS" -o "$BODY" -w '%{http_code}' -X "$method" "$B$path" "$@")
   printf '\n%s %s -> %s (expected %s)\n' "$method" "$path" "$got" "$want"
   cat "$BODY"
   printf '\n'
@@ -21,7 +24,20 @@ expect() {
     printf 'Unexpected status code\n' >&2
     exit 1
   fi
+  case "$want" in
+    4??|5??) grep -qi '^content-type: application/problem+json' "$HEADERS" ;;
+    2??)
+      if [ -n "${EXPECTED_NODE_ID:-}" ]; then
+        grep -Fq "\"nodeId\":\"$EXPECTED_NODE_ID\"" "$BODY"
+      fi
+      ;;
+  esac
 }
+
+if [ "${2:-}" = "--unavailable" ]; then
+  expect 503 GET /v1/auctions/1 --max-time 5
+  exit 0
+fi
 
 # CreateAuction: 201, invalid fields/malformed body -> 400.
 expect 201 POST /v1/auctions -H "$J" -d '{"title":"Book","description":"Hardcover","sellerName":"seller","startingPrice":1000}'
