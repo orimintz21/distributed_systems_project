@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package auction.v1;
+
+import "auction/v1/auction.proto";
+
+option go_package = "github.com/orimintz21/distributed_systems_project/gen/auction/v1;auctionv1";
+
+message State {
+  map<uint64, AuctionState> auctions = 1;
+  uint64 last_auction_id = 2; // Zero before the first auction is created.
+  uint64 last_bid_id = 3; // Global across auctions. Zero before the first accepted bid.
+}
+
+message AuctionState {
+  // highest_bid and winner_name are derived from status and bids on output.
+  Auction auction = 1;
+  repeated Bid bids = 2; // Accepted bids in acceptance order.
+}
+
+message Snapshot {
+  State state = 1;
+  int64 applied = 2; // Number of commands applied to reach this state.
+}
+
+// Read consistency is selected by the server before executing a command.
+message Command {
+  oneof kind {
+    CreateAuction create_auction = 1;
+    ListAuctions list_auctions = 2;
+    GetAuction get_auction = 3;
+    ListBids list_bids = 4;
+    PlaceBid place_bid = 5;
+    CloseAuction close_auction = 6;
+  }
+}
+
+message CreateAuction {
+  string title = 1;
+  string description = 2;
+  string seller_name = 3;
+  uint64 starting_price = 4;
+}
+
+message ListAuctions {
+  optional AuctionStatus status = 1; // Absent means all auctions.
+}
+
+message GetAuction {
+  uint64 auction_id = 1;
+}
+
+message ListBids {
+  uint64 auction_id = 1;
+}
+
+message PlaceBid {
+  uint64 auction_id = 1;
+  string bidder_name = 2;
+  uint64 amount = 3;
+}
+
+message CloseAuction {
+  uint64 auction_id = 1;
+  string seller_name = 2;
+}
+
+enum Code {
+  CODE_OK = 0;
+  CODE_INVALID_ARGUMENT = 1;
+  CODE_PERMISSION_DENIED = 2;
+  CODE_NOT_FOUND = 3;
+  CODE_FAILED_PRECONDITION = 4;
+}
+
+message Result {
+  Code code = 1;
+  string message = 2; // Error detail when the code is not OK.
+  Auction auction = 3; // CreateAuction, GetAuction, CloseAuction.
+  Bid bid = 4; // PlaceBid.
+  repeated Auction auctions = 5; // ListAuctions, in ascending ID order.
+  repeated Bid bids = 6; // ListBids, in acceptance order.
+}

@@ -1,5 +1,6 @@
 # Part I build. Requires: Go >= 1.26, protoc (https://protobuf.dev/installation/).
 MODULE := github.com/orimintz21/distributed_systems_project
+PROTOS := proto/auction/v1/auction.proto proto/auction/v1/sm.proto
 CORS ?=           # e.g. make run CORS='*'  (only for the API-tool containers on :8090-:8092)
 export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
@@ -26,7 +27,7 @@ gen-proto:
 	protoc -I proto \
 	  --go_out=. --go_opt=module=$(MODULE) \
 	  --go-grpc_out=. --go-grpc_opt=module=$(MODULE) \
-	  proto/auction/v1/auction.proto
+	  $(PROTOS)
 
 build: gen
 	go mod tidy
