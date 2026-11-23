@@ -1,11 +1,16 @@
-package sm
+package sm_test
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
+	"github.com/orimintz21/distributed_systems_project/internal/executor"
+	"github.com/orimintz21/distributed_systems_project/internal/sm"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 )
@@ -62,6 +67,7 @@ type commandCase struct {
 	after   string // empty means unchanged
 }
 
+// TestInvalidCommand checks that an empty command fails without changing state.
 func TestInvalidCommand(t *testing.T) {
 	runCommandCases(t, []commandCase{
 		{
@@ -84,11 +90,36 @@ func runCommandCases(t *testing.T, tests []commandCase) {
 				after = before
 			}
 			state := parseText(t, before, &auctionv1.State{})
-			result := Execute(state, parseText(t, tc.command, &auctionv1.Command{}))
+			command := parseText(t, tc.command, &auctionv1.Command{})
+			result := sm.Execute(state, command)
 			checkEqual(t, "result", result, parseText(t, tc.result, &auctionv1.Result{}))
 			checkEqual(t, "state", state, parseText(t, after, &auctionv1.State{}))
+
+			queuedState := parseText(t, before, &auctionv1.State{})
+			exec, ctx, stop := startExecutor(t, queuedState)
+			queuedResult, err := exec.Submit(ctx, command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stop()
+			checkEqual(t, "queued result", queuedResult, result)
+			checkEqual(t, "queued state after shutdown", queuedState, state)
 		})
 	}
+}
+
+func startExecutor(t *testing.T, state *auctionv1.State) (*executor.Executor, context.Context, func()) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	exec := executor.New(state)
+	var worker sync.WaitGroup
+	worker.Go(func() { exec.Run(ctx) })
+	stop := func() {
+		cancel()
+		worker.Wait()
+	}
+	t.Cleanup(stop)
+	return exec, ctx, stop
 }
 
 func stateText(lastAuctionID, lastBidID uint64, entries ...string) string {

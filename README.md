@@ -16,11 +16,11 @@ commands in queue order to the in-memory auction state.
 ## Build and run
 
 Requirements: Go >= 1.26.0, `protoc`, Make, a POSIX shell, and `curl`.
-Docker and `grpcurl` are optional.
+The demo and check scripts also use `jq`. Docker and `grpcurl` are optional.
 
 ```sh
 sudo apt update
-sudo apt install protobuf-compiler
+sudo apt install protobuf-compiler jq
 ```
 
 From the project directory:
@@ -70,10 +70,25 @@ The server starts with empty state by default. To start from a protobuf-text
 Each process owns its local state. Writes affect subsequent requests to the
 same gRPC server and live in memory for the lifetime of that process.
 
-## Demonstration scripts
+## Tests and demonstrations
 
-The main `etc/demo.sh` and `make check` scenarios use the Part I fixture
-responses. The Part II server tests in Step 5 update those scenarios.
+```sh
+make test
+make check
+```
+
+`make test` regenerates the bindings and runs the Go tests under the race
+detector. The tests compare direct and queued results, check concurrent bids,
+and exercise REST through an in-memory gRPC connection. The REST tests inject
+backend failures to verify HTTP 500 and 504 responses.
+
+`make check` starts two local nodes and runs the REST demo against both. It
+checks that writes appear in later reads, rejected bids leave the history
+intact, and concurrent creates each appear in the auction list. It also tests
+forwarding and HTTP 503 after the backend stops.
+
+To run the demo against an already-running server, use
+`./etc/demo.sh http://localhost:8080`. The demo creates its own auctions.
 
 To demonstrate an unavailable backend manually, stop n1 while leaving n2 running:
 
@@ -117,6 +132,9 @@ With n1 running, open:
 - Swagger UI: <http://localhost:8080/docs>
 - Swagger Editor: <http://localhost:8080/editor>
 - OpenAPI document: <http://localhost:8080/openapi.yaml>
+
+In Swagger UI, use **Try it out** on `POST /v1/auctions` and then read the
+returned ID with `GET /v1/auctions/{auctionId}`.
 
 Each node serves these pages on its REST port. The Swagger pages load scripts
 from a CDN and require internet access. The editor does not save to the repository:

@@ -1,10 +1,10 @@
-# Part I build. Requires: Go >= 1.26, protoc (https://protobuf.dev/installation/).
+# Requires Go >= 1.26 and protoc (https://protobuf.dev/installation/).
 MODULE := github.com/orimintz21/distributed_systems_project
 PROTOS := proto/auction/v1/auction.proto proto/auction/v1/sm.proto
 CORS ?=           # e.g. make run CORS='*'  (only for the API-tool containers on :8090-:8092)
 export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
-.PHONY: setup gen gen-rest gen-proto build run run2 demo check tools-up tools-down swagger-up swagger-down clean
+.PHONY: setup gen gen-rest gen-proto build test run run2 demo check tools-up tools-down swagger-up swagger-down clean
 
 # One-time: record the code generators as Go tools (pinned in go.mod) and install them.
 setup:
@@ -33,6 +33,9 @@ build: gen
 	go mod tidy
 	go vet ./...
 	go build -o bin/server ./cmd/server
+
+test: gen
+	go test -race ./...
 
 run: build
 	./bin/server -id n1 -http :8080 -grpc :50051 -cors-origin '$(CORS)'

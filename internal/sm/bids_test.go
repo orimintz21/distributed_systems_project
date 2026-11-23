@@ -1,4 +1,4 @@
-package sm
+package sm_test
 
 import (
 	"math"
@@ -7,6 +7,7 @@ import (
 	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
 )
 
+// TestBidCommands checks bid validation, ID allocation, and history through Execute and Submit.
 func TestBidCommands(t *testing.T) {
 	runCommandCases(t, []commandCase{
 		{

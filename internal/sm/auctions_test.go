@@ -1,4 +1,4 @@
-package sm
+package sm_test
 
 import (
 	"math"
@@ -7,6 +7,7 @@ import (
 	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
 )
 
+// TestAuctionCommands checks auction creation, reads, and closing through Execute and Submit.
 func TestAuctionCommands(t *testing.T) {
 	runCommandCases(t, []commandCase{
 		{

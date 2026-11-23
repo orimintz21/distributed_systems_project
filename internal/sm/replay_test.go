@@ -1,16 +1,19 @@
-package sm
+package sm_test
 
 import (
 	"testing"
 
 	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
+	"github.com/orimintz21/distributed_systems_project/internal/sm"
 	"google.golang.org/protobuf/encoding/prototext"
 )
 
+// TestExecuteDeterminism checks that replay gives equal states and matching direct and queued results.
 func TestExecuteDeterminism(t *testing.T) {
 	first := parseText(t, fixtureText, &auctionv1.State{})
 	second := parseText(t, stateText(2, 2, openRadioEntry, clockEntry), &auctionv1.State{})
 	checkEqual(t, "initial state", first, second)
+	exec, ctx, _ := startExecutor(t, parseText(t, fixtureText, &auctionv1.State{}))
 
 	commands := []struct {
 		name string
@@ -27,28 +30,34 @@ func TestExecuteDeterminism(t *testing.T) {
 	for _, step := range commands {
 		t.Run(step.name, func(t *testing.T) {
 			command := parseText(t, step.text, &auctionv1.Command{})
-			firstResult := Execute(first, command)
-			secondResult := Execute(second, command)
+			firstResult := sm.Execute(first, command)
+			secondResult := sm.Execute(second, command)
 			checkEqual(t, "result", firstResult, secondResult)
 			checkEqual(t, "state", first, second)
+			queued, err := exec.Submit(ctx, command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkEqual(t, "queued result", queued, firstResult)
 		})
 	}
 }
 
+// TestSnapshotRoundTrip checks that restore preserves state, counters, and snapshot independence.
 func TestSnapshotRoundTrip(t *testing.T) {
 	state := parseText(t, fixtureText, &auctionv1.State{})
-	snapshot := TakeSnapshot(state, 4)
+	snapshot := sm.TakeSnapshot(state, 4)
 	data, err := prototext.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	closeRadio := parseText(t, `close_auction { auction_id: 1 seller_name: "Dana" }`, &auctionv1.Command{})
-	Execute(state, closeRadio)
+	sm.Execute(state, closeRadio)
 	decoded := parseText(t, string(data), &auctionv1.Snapshot{})
 	checkEqual(t, "snapshot after changing live state", snapshot, decoded)
 
-	restored, applied := Restore(decoded)
+	restored, applied := sm.Restore(decoded)
 	if applied != 4 {
 		t.Errorf("restored applied count = %d, want 4", applied)
 	}
@@ -56,12 +65,12 @@ func TestSnapshotRoundTrip(t *testing.T) {
 
 	create := parseText(t, createLamp, &auctionv1.Command{})
 	wantAuction := parseText(t, messageText("auction", lamp), &auctionv1.Result{})
-	checkEqual(t, "create after restore", Execute(restored, create), wantAuction)
+	checkEqual(t, "create after restore", sm.Execute(restored, create), wantAuction)
 
 	bid := parseText(t, `place_bid { auction_id: 2 bidder_name: "Jo" amount: 50 }`, &auctionv1.Command{})
 	wantBid := parseText(t, messageText("bid", newClockBid), &auctionv1.Result{})
-	checkEqual(t, "bid after restore", Execute(restored, bid), wantBid)
+	checkEqual(t, "bid after restore", sm.Execute(restored, bid), wantBid)
 
-	Execute(restored, closeRadio)
+	sm.Execute(restored, closeRadio)
 	checkEqual(t, "snapshot after changing restored state", decoded, snapshot)
 }
