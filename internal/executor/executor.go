@@ -15,8 +15,6 @@ const QueueLen = 1024
 // ErrStopped is returned by Submit once Run has returned.
 var ErrStopped = errors.New("executor stopped")
 
-var errTODO = errors.New("executor: not implemented yet (Part II, Step 4)")
-
 type request struct {
 	cmd   *auctionv1.Command
 	reply chan *auctionv1.Result
@@ -44,6 +42,7 @@ func New(state *auctionv1.State) *Executor {
 }
 
 // Submit enqueues cmd and waits for its result.
+// Canceling the wait after enqueueing leaves the command in the queue.
 func (e *Executor) Submit(ctx context.Context, cmd *auctionv1.Command) (*auctionv1.Result, error) {
 	r := newRequest(cmd)
 	if err := e.enqueue(ctx, r); err != nil {
@@ -53,13 +52,34 @@ func (e *Executor) Submit(ctx context.Context, cmd *auctionv1.Command) (*auction
 }
 
 func (e *Executor) enqueue(ctx context.Context, r request) error {
-	// TODO 4a: Send to the queue or return on context cancellation or shutdown.
-	return errTODO
+	// Check cancellation and shutdown before competing for an available queue slot.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopped:
+		return ErrStopped
+	default:
+	}
+
+	select {
+	case e.queue <- r:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.stopped:
+		return ErrStopped
+	}
 }
 
 func (e *Executor) await(ctx context.Context, r request) (*auctionv1.Result, error) {
-	// TODO 4b: Wait for the reply, context cancellation, or shutdown.
-	return nil, errTODO
+	select {
+	case result := <-r.reply:
+		return result, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-e.stopped:
+		return nil, ErrStopped
+	}
 }
 
 // Run executes commands until ctx ends. Call it once per executor.
