@@ -43,7 +43,7 @@ In another terminal:
 For forwarding, leave n1 running, start `make run2` in another terminal, then run:
 
 ```sh
-EXPECTED_NODE_ID=n1 ./etc/demo.sh http://localhost:8081
+./etc/demo.sh http://localhost:8081
 ```
 
 | Node | REST address | gRPC address | gRPC target used by REST handlers |
@@ -51,15 +51,14 @@ EXPECTED_NODE_ID=n1 ./etc/demo.sh http://localhost:8081
 | n1 | `localhost:8080` | `localhost:50051` | Its own gRPC server |
 | n2 | `localhost:8081` | `localhost:50052` | n1 at `localhost:50051` |
 
-Successful responses through n2 contain `"nodeId":"n1"`, identifying the gRPC
-server that answered. Stop manually started servers with Ctrl+C.
+The `-id` flag labels each process's startup and shutdown logs. To verify
+forwarding, stop n1 and check that n2 returns HTTP 503 as shown below. Stop
+manually started servers with Ctrl+C.
 
 ## Demonstration scripts
 
 `etc/demo.sh` sends requests to an already-running server, checks expected HTTP
-status codes, and prints response bodies. It also checks the error content type
-and, when `EXPECTED_NODE_ID` is set, the responding node ID. It does not assert
-every field in the JSON bodies.
+status codes and error content types, and prints response bodies.
 
 To automate the setup:
 
@@ -94,14 +93,14 @@ Reads accept `?consistency=sequential|linearizable`, defaulting to `sequential`.
 The choice is passed to gRPC. Writes require linearizability in the service
 contract; consistency guarantees are enforced from Part III.
 
-IDs and prices use `uint64`; prices are positive integer cents. Request and
-success bodies use `application/json`. Success bodies contain the result and
-`nodeId`. `highestBid` is omitted when there are no accepted bids; `winnerName`
-is omitted while open or when closed without bids.
+IDs and prices use `uint64`. Prices are positive integer cents. Request and
+success bodies use `application/json`. `highestBid` is omitted when there are no
+accepted bids. `winnerName` is omitted while open or when closed without bids.
 
-The two list RPCs stream one item per message. HTTP handlers collect the complete
-stream into a JSON list response. Empty results contain an empty array and still
-identify the responding node.
+The two list RPCs stream one item per message and set `fin: true` on the
+message carrying the last item. An empty list sends one message with just
+`fin: true`. HTTP handlers collect the items into a JSON array and return
+HTTP 503 if the stream ends without `fin: true`.
 
 Errors use `application/problem+json`: 400 for invalid requests or seller bidding,
 403 for seller mismatch when closing, 404 for unknown auctions, 409 for closed

@@ -79,15 +79,19 @@ func (h *Handlers) ListAuctions(ctx context.Context, req rest.ListAuctionsReques
 		return nil, err
 	}
 	response := rest.ListAuctions200JSONResponse{Auctions: []rest.Auction{}}
+	fin := false
 	for {
 		message, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			if !fin {
+				return nil, status.Error(codes.Unavailable, "auction stream ended without fin")
+			}
 			return response, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		response.NodeId = message.GetNodeId()
+		fin = message.GetFin()
 		if auction := message.GetAuction(); auction != nil {
 			response.Auctions = append(response.Auctions, auctionFromProto(auction))
 		}
@@ -106,7 +110,7 @@ func (h *Handlers) CreateAuction(ctx context.Context, req rest.CreateAuctionRequ
 	if err != nil {
 		return nil, err
 	}
-	return rest.CreateAuction201JSONResponse{Auction: auctionFromProto(response.GetAuction()), NodeId: response.GetNodeId()}, nil
+	return rest.CreateAuction201JSONResponse{Auction: auctionFromProto(response.GetAuction())}, nil
 }
 
 // GET /v1/auctions/{auctionId}
@@ -119,7 +123,7 @@ func (h *Handlers) GetAuction(ctx context.Context, req rest.GetAuctionRequestObj
 	if err != nil {
 		return nil, err
 	}
-	return rest.GetAuction200JSONResponse{Auction: auctionFromProto(response.GetAuction()), NodeId: response.GetNodeId()}, nil
+	return rest.GetAuction200JSONResponse{Auction: auctionFromProto(response.GetAuction())}, nil
 }
 
 // PATCH /v1/auctions/{auctionId}
@@ -131,7 +135,7 @@ func (h *Handlers) CloseAuction(ctx context.Context, req rest.CloseAuctionReques
 	if err != nil {
 		return nil, err
 	}
-	return rest.CloseAuction200JSONResponse{Auction: auctionFromProto(response.GetAuction()), NodeId: response.GetNodeId()}, nil
+	return rest.CloseAuction200JSONResponse{Auction: auctionFromProto(response.GetAuction())}, nil
 }
 
 // GET /v1/auctions/{auctionId}/bids
@@ -145,15 +149,19 @@ func (h *Handlers) ListBids(ctx context.Context, req rest.ListBidsRequestObject)
 		return nil, err
 	}
 	response := rest.ListBids200JSONResponse{Bids: []rest.Bid{}}
+	fin := false
 	for {
 		message, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			if !fin {
+				return nil, status.Error(codes.Unavailable, "bid stream ended without fin")
+			}
 			return response, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		response.NodeId = message.GetNodeId()
+		fin = message.GetFin()
 		if bid := message.GetBid(); bid != nil {
 			response.Bids = append(response.Bids, bidFromProto(bid))
 		}
@@ -171,7 +179,7 @@ func (h *Handlers) PlaceBid(ctx context.Context, req rest.PlaceBidRequestObject)
 	if err != nil {
 		return nil, err
 	}
-	return rest.PlaceBid201JSONResponse{Bid: bidFromProto(response.GetBid()), NodeId: response.GetNodeId()}, nil
+	return rest.PlaceBid201JSONResponse{Bid: bidFromProto(response.GetBid())}, nil
 }
 
 // ---------------------------------------------------------------------------

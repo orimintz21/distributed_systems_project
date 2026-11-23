@@ -41,7 +41,7 @@ done
 
 step "4/5 auction operations, errors, and forwarding"
 for B in http://127.0.0.1:18080 http://127.0.0.1:18081; do
-    EXPECTED_NODE_ID=n1 ./etc/demo.sh "$B"
+    ./etc/demo.sh "$B"
 done
 
 step "5/5 unavailable backend: stop n1, then call n2 (expected 503)"

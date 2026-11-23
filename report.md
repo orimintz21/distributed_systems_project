@@ -123,10 +123,10 @@ All listed fields are required except `Auction.highestBid` and
 
 | Schema | Fields |
 | --- | --- |
-| `AuctionReply` | `auction`: Auction; `nodeId`: string |
-| `AuctionListReply` | `auctions`: array of Auction; `nodeId`: string |
-| `BidReply` | `bid`: Bid; `nodeId`: string |
-| `BidListReply` | `bids`: array of Bid; `nodeId`: string |
+| `AuctionReply` | `auction` (Auction) |
+| `AuctionListReply` | `auctions` (array of Auction) |
+| `BidReply` | `bid` (Bid) |
+| `BidListReply` | `bids` (array of Bid) |
 | `Problem` | `type`, `title`, `detail`: strings; `status`: integer |
 
 ### 3.3 Errors and status mapping
@@ -152,12 +152,12 @@ Each REST handler calls the corresponding RPC and translates its result to the
 response documented in Section 3. Read operations pass the client's consistency
 choice. Errors use gRPC status codes, translated according to Section 3.3.
 
-The four non-list RPCs are unary. `ListAuctions` and `ListBids` use server
-streaming, with one item per response message. Empty results produce one message
-containing only `nodeId`. The HTTP
-handler collects the complete stream into the corresponding JSON list response.
-If receiving the stream fails, the handler returns the mapped error instead of
-a partial successful response.
+The four non-list RPCs are unary. `ListAuctions` and `ListBids` send one item per
+message and set `fin: true` on the message carrying the last item. An empty
+result sends one message with just `fin: true`. The HTTP handler collects the
+items into the corresponding JSON list response. If the stream reaches EOF
+without a final marker, the handler returns HTTP 503. Other receive errors use
+the usual gRPC status mapping.
 
 | REST operation | RPC |
 | --- | --- |

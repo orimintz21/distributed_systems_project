@@ -2,7 +2,6 @@
 # Start `make run`, then run ./etc/demo.sh (node n1).
 # Start `make run2`, then run ./etc/demo.sh http://localhost:8081 (forwarded to n1).
 # After stopping n1, run ./etc/demo.sh http://localhost:8081 --unavailable.
-# Set EXPECTED_NODE_ID to also check which gRPC node answered successful calls.
 # Fixtures: 1=open with bids, 2=closed with bids, 3=open without bids,
 # 4=closed without bids; seller name is "seller". Writes are not persisted.
 set -eu
@@ -26,11 +25,6 @@ expect() {
   fi
   case "$want" in
     4??|5??) grep -qi '^content-type: application/problem+json' "$HEADERS" ;;
-    2??)
-      if [ -n "${EXPECTED_NODE_ID:-}" ]; then
-        grep -Fq "\"nodeId\":\"$EXPECTED_NODE_ID\"" "$BODY"
-      fi
-      ;;
   esac
 }
 

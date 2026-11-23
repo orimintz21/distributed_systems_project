@@ -52,7 +52,6 @@ message CreateAuctionRequest {
 
 message CreateAuctionResponse {
   Auction auction = 1;
-  string node_id = 2;
 }
 
 message ListAuctionsRequest {
@@ -61,11 +60,10 @@ message ListAuctionsRequest {
   Consistency consistency = 2;
 }
 
-// One auction per message, ordered by auction ID. With no matches, send one
-// message containing only node_id.
+// One auction per message, ordered by auction ID. For an empty list, send fin alone.
 message ListAuctionsResponse {
   Auction auction = 1;
-  string node_id = 2;
+  bool fin = 3; // True on the final message of a successful stream.
 }
 
 message GetAuctionRequest {
@@ -75,7 +73,6 @@ message GetAuctionRequest {
 
 message GetAuctionResponse {
   Auction auction = 1;
-  string node_id = 2;
 }
 
 message ListBidsRequest {
@@ -83,11 +80,10 @@ message ListBidsRequest {
   Consistency consistency = 2;
 }
 
-// One bid per message, in acceptance order. An existing auction without bids
-// produces one message containing only node_id.
+// One bid per message, in acceptance order. For an empty list, send fin alone.
 message ListBidsResponse {
   Bid bid = 1;
-  string node_id = 2;
+  bool fin = 3; // True on the final message of a successful stream.
 }
 
 message PlaceBidRequest {
@@ -98,7 +94,6 @@ message PlaceBidRequest {
 
 message PlaceBidResponse {
   Bid bid = 1;
-  string node_id = 2;
 }
 
 message CloseAuctionRequest {
@@ -110,5 +105,4 @@ message CloseAuctionRequest {
 
 message CloseAuctionResponse {
   Auction auction = 1;
-  string node_id = 2;
 }

@@ -7,7 +7,6 @@ package grpcsvc
 
 import (
 	"context"
-	"maps"
 	"slices"
 
 	"google.golang.org/grpc/codes"
@@ -17,7 +16,7 @@ import (
 	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
 )
 
-// Server serves dummy auctions and identifies the node answering each RPC.
+// Server serves dummy auctions.
 type Server struct {
 	auctionv1.UnimplementedAuctionServiceServer
 	NodeID string
@@ -83,7 +82,6 @@ func (s *Server) CreateAuction(ctx context.Context, req *auctionv1.CreateAuction
 		return nil, status.Error(codes.InvalidArgument, "starting price must be positive")
 	}
 	return &auctionv1.CreateAuctionResponse{
-		NodeId: s.NodeID,
 		Auction: &auctionv1.Auction{
 			Id: 5, Title: req.GetTitle(), Description: req.GetDescription(),
 			SellerName: req.GetSellerName(), StartingPrice: req.GetStartingPrice(),
@@ -99,22 +97,22 @@ func (s *Server) ListAuctions(req *auctionv1.ListAuctionsRequest, stream auction
 	if req.Status != nil && req.GetStatus() != auctionv1.AuctionStatus_AUCTION_STATUS_OPEN && req.GetStatus() != auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED {
 		return status.Errorf(codes.InvalidArgument, "unsupported auction status %d", req.GetStatus())
 	}
-	sentAuctions := false
-	for _, id := range slices.Sorted(maps.Keys(dummyAuctions)) {
-		auction := dummyAuctions[id]
-		if req.Status != nil && auction.Status != req.GetStatus() {
-			continue
+	ids := make([]uint64, 0, len(dummyAuctions))
+	for id, auction := range dummyAuctions {
+		if req.Status == nil || auction.Status == req.GetStatus() {
+			ids = append(ids, id)
 		}
-		sentAuctions = true
+	}
+	if len(ids) == 0 {
+		return stream.Send(&auctionv1.ListAuctionsResponse{Fin: true})
+	}
+	slices.Sort(ids)
+	for i, id := range ids {
 		if err := stream.Send(&auctionv1.ListAuctionsResponse{
-			Auction: auction, NodeId: s.NodeID,
+			Auction: dummyAuctions[id], Fin: i == len(ids)-1,
 		}); err != nil {
 			return err
 		}
-	}
-	if !sentAuctions {
-		// Empty results still need a message identifying the responding node.
-		return stream.Send(&auctionv1.ListAuctionsResponse{NodeId: s.NodeID})
 	}
 	return nil
 }
@@ -127,7 +125,7 @@ func (s *Server) GetAuction(ctx context.Context, req *auctionv1.GetAuctionReques
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "auction %d not found", req.GetAuctionId())
 	}
-	return &auctionv1.GetAuctionResponse{Auction: auction, NodeId: s.NodeID}, nil
+	return &auctionv1.GetAuctionResponse{Auction: auction}, nil
 }
 
 func (s *Server) ListBids(req *auctionv1.ListBidsRequest, stream auctionv1.AuctionService_ListBidsServer) error {
@@ -139,12 +137,11 @@ func (s *Server) ListBids(req *auctionv1.ListBidsRequest, stream auctionv1.Aucti
 	}
 	bids := dummyBids[req.GetAuctionId()]
 	if len(bids) == 0 {
-		// Preserve the responding node's ID even when there are no bids.
-		return stream.Send(&auctionv1.ListBidsResponse{NodeId: s.NodeID})
+		return stream.Send(&auctionv1.ListBidsResponse{Fin: true})
 	}
-	for _, bid := range bids {
+	for i, bid := range bids {
 		if err := stream.Send(&auctionv1.ListBidsResponse{
-			Bid: bid, NodeId: s.NodeID,
+			Bid: bid, Fin: i == len(bids)-1,
 		}); err != nil {
 			return err
 		}
@@ -173,7 +170,6 @@ func (s *Server) PlaceBid(ctx context.Context, req *auctionv1.PlaceBidRequest) (
 		Bid: &auctionv1.Bid{
 			Id: 6, AuctionId: auction.Id, BidderName: req.GetBidderName(), Amount: req.GetAmount(),
 		},
-		NodeId: s.NodeID,
 	}, nil
 }
 
@@ -191,5 +187,5 @@ func (s *Server) CloseAuction(ctx context.Context, req *auctionv1.CloseAuctionRe
 	if auction.HighestBid != nil {
 		auction.WinnerName = proto.String(auction.HighestBid.BidderName)
 	}
-	return &auctionv1.CloseAuctionResponse{Auction: auction, NodeId: s.NodeID}, nil
+	return &auctionv1.CloseAuctionResponse{Auction: auction}, nil
 }

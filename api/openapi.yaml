@@ -290,45 +290,33 @@ components:
 
     AuctionReply:
       type: object
-      required: [auction, nodeId]
+      required: [auction]
       properties:
         auction: { $ref: '#/components/schemas/Auction' }
-        nodeId:
-          type: string
-          description: ID of the gRPC node that served the operation
 
     AuctionListReply:
       type: object
-      required: [auctions, nodeId]
+      required: [auctions]
       properties:
         auctions:
           type: array
           description: Auctions ordered numerically by ID; empty array if none match
           items: { $ref: '#/components/schemas/Auction' }
-        nodeId:
-          type: string
-          description: ID of the gRPC node that served the operation
 
     BidReply:
       type: object
-      required: [bid, nodeId]
+      required: [bid]
       properties:
         bid: { $ref: '#/components/schemas/Bid' }
-        nodeId:
-          type: string
-          description: ID of the gRPC node that served the operation
 
     BidListReply:
       type: object
-      required: [bids, nodeId]
+      required: [bids]
       properties:
         bids:
           type: array
           description: Accepted bids in acceptance order; empty array if no bids exist
           items: { $ref: '#/components/schemas/Bid' }
-        nodeId:
-          type: string
-          description: ID of the gRPC node that served the operation
 
     Problem:
       type: object
