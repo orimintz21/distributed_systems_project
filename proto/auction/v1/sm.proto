@@ -76,8 +76,19 @@ enum Code {
 message Result {
   Code code = 1;
   string message = 2; // Error detail when the code is not OK.
-  Auction auction = 3; // CreateAuction, GetAuction, CloseAuction.
-  Bid bid = 4; // PlaceBid.
-  repeated Auction auctions = 5; // ListAuctions, in ascending ID order.
-  repeated Bid bids = 6; // ListBids, in acceptance order.
+  // Successful commands set content, including when a list is empty.
+  oneof content {
+    Auction auction = 3; // CreateAuction, GetAuction, CloseAuction.
+    Bid bid = 4; // PlaceBid.
+    AuctionList auction_list = 5; // ListAuctions.
+    BidList bid_list = 6; // ListBids.
+  }
+}
+
+message AuctionList {
+  repeated Auction auctions = 1; // Ascending auction ID order.
+}
+
+message BidList {
+  repeated Bid bids = 1; // Acceptance order.
 }

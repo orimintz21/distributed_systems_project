@@ -82,7 +82,7 @@ func sendListAuctionsResult(result *auctionv1.Result, stream auctionv1.AuctionSe
 	if err := resultStatus(result); err != nil {
 		return err
 	}
-	auctions := result.GetAuctions()
+	auctions := result.GetAuctionList().GetAuctions()
 	if len(auctions) == 0 {
 		return stream.Send(&auctionv1.ListAuctionsResponse{Fin: true})
 	}
@@ -98,7 +98,7 @@ func sendListBidsResult(result *auctionv1.Result, stream auctionv1.AuctionServic
 	if err := resultStatus(result); err != nil {
 		return err
 	}
-	bids := result.GetBids()
+	bids := result.GetBidList().GetBids()
 	if len(bids) == 0 {
 		return stream.Send(&auctionv1.ListBidsResponse{Fin: true})
 	}
