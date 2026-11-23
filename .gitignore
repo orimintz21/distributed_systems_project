@@ -8,3 +8,4 @@ repo.url
 students.json
 *.zip
 *.docx
+proj*
