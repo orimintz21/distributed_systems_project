@@ -1,214 +1,155 @@
-# [Yuval Lande]
+# Yuval Lande
 
-# [Ori Mintz]
+# Ori Mintz
 
-<!-- Leave the rest of the first PDF page empty for feedback. -->
+<!-- The first page is reserved for feedback. -->
 <div style="break-after: page; page-break-after: always;"></div>
 
 # Auction House
 
-## 1. Service semantics
+## Part I · Service and REST resources
 
-### 1.1 Purpose and objects
+Auction House manages auctions for fictional items. Participants supply seller and bidder names, and the service compares those names as strings. The service assigns unsigned 64-bit auction and bid IDs, and represents prices as positive integer cents.
 
-The service manages auctions for fictional items. Users create auctions, inspect
-them, place bids, and close them. People are represented by supplied names; this
-design does not include a user registry, authentication, payments, or delivery.
-There are two domain objects: auctions and accepted bids.
+### Resources and operations
 
-| Auction field | Type | Meaning |
+**Auction collection.** Create an auction by supplying a title, description, seller name, and starting price. Creation returns the new auction, which starts open with no accepted bids. List the collection in ascending auction ID order, optionally filtering for open or closed auctions. Listing is a batch read and returns an empty collection when nothing matches.
+
+**Auction.** Read an auction by ID to retrieve its ID, title, description, seller name, starting price, and highest accepted bid if one exists. An unknown ID produces a not-found result.
+
+**Bid collection.** List an auction's accepted bids in acceptance order. An existing auction with no bids returns an empty collection. To place a bid, supply a bidder name and amount. The auction must exist and be open, and the bidder name must differ from its seller name. The first bid must be at least the starting price, and each later bid must exceed the highest accepted bid. Success returns the new bid, which records its own ID, auction ID, bidder name, and amount. Rejection leaves the history unchanged.
+
+**Closure.** Create the auction's closure by supplying the matching seller name and the value `true`. Creation permanently ends bidding. Repeating a valid close returns the existing closure. Read the closure to check whether it exists. Its representation is `true`, and it is absent for an open or unknown auction.
+
+**Winning bid.** Read the winning bid after closure. It has the same representation as an accepted bid and is the last entry in the bid history. The winning bid is absent while the auction is open, if it closed without bids, or if the auction is unknown.
+
+### Operation classes and consistency
+
+| Operations | Class | Required consistency |
 | --- | --- | --- |
-| `id` | uint64 | Unique auction identifier assigned by the service |
-| `title` | string | Short name of the item |
-| `description` | string | Description of the item |
-| `sellerName` | string | Name of the seller |
-| `startingPrice` | uint64 | Minimum first bid, in integer cents |
-| `highestBid` | Bid (optional) | Highest accepted bid; omitted before any bid |
+| List auctions or bids, read an auction, closure, or winning bid | Read | Sequential by default, linearizable on request |
+| Create an auction | Write | Linearizable |
+| Place a bid or close an auction | Read-modify-write | Linearizable |
 
-| Bid field | Type | Meaning |
+**Design decisions.** Explicit closure lets clients decide when bidding ends and makes a concurrent bid and close resolve by execution order. Strictly increasing bids prevent ties and make the winning bid directly derivable from accepted history. These rules live in `internal/sm/sm.go`. Closure and winning bid have their own resources, so clients can retrieve either independently of the auction details.
+
+<div style="break-after: page; page-break-after: always;"></div>
+
+## Part I · RPC and HTTP mapping
+
+`api/openapi.yaml` defines the client contract. `proto/auction/v1/auction.proto` defines `auction.v1.AuctionService`, with a dedicated request and response message for each RPC. `ListAuctions` and `ListBids` are server-streaming RPCs. The other four RPCs are unary.
+
+`{auctionId}` is a decimal unsigned 64-bit ID. All reads accept the optional `consistency` query parameter with values `sequential` and `linearizable`. The auction list also accepts `status=open` or `status=closed`. Request and success bodies use JSON.
+
+| HTTP operation | gRPC method | Success and response | Errors |
+| --- | --- | --- | --- |
+| POST `/v1/auctions` | `CreateAuction` | 201, `auction` | 409 |
+| GET `/v1/auctions` | `ListAuctions` | 200, `auctions` array | |
+| GET `/v1/auctions/{auctionId}` | `GetAuction` | 200, `auction` | 404 |
+| GET `/v1/auctions/{auctionId}/bids` | `ListBids` | 200, `bids` array | 404 |
+| POST `/v1/auctions/{auctionId}/bids` | `PlaceBid` | 201, `bid` | 404, 409 |
+| GET `/v1/auctions/{auctionId}/closed` | `GetAuction` | 200, `true` | 404 |
+| PUT `/v1/auctions/{auctionId}/closed` | `CloseAuction` | 201 new, 200 repeat, `true` | 403, 404 |
+| GET `/v1/auctions/{auctionId}/winner` | `GetAuction` | 200, `bid` | 404 |
+
+The auction creation body contains `title`, `description`, `sellerName`, and `startingPrice`. A bid body contains `bidderName` and `amount`. The closure body contains `sellerName` and `closed: true`. The read operations have no request body.
+
+Every operation can also return 400, 500, 503, or 504. Errors use `application/problem+json` with `type`, `title`, `status`, and `detail`. The adapter in `internal/httpapi/handlers.go` maps RPC errors as follows.
+
+| gRPC status | HTTP response | Meaning |
 | --- | --- | --- |
-| `id` | uint64 | Identifier assigned by the service |
-| `auctionId` | uint64 | Auction receiving the bid |
-| `bidderName` | string | Name of the person placing the bid |
-| `amount` | uint64 | Offered amount, in integer cents |
+| `INVALID_ARGUMENT` | 400 | Invalid input or seller bidding on their own auction |
+| `PERMISSION_DENIED` | 403 | Supplied seller name differs from the auction's seller |
+| `NOT_FOUND` | 404 | Unknown auction |
+| `FAILED_PRECONDITION` | 409 | Closed auction, insufficient bid, or ID exhaustion |
+| `UNAVAILABLE` | 503 | Target unavailable or list stream ended without its final marker |
+| `DEADLINE_EXCEEDED` | 504 | Deadline elapsed |
+| Other failures | 500 | Unexpected server failure |
 
-The REST `Auction` representation includes the highest accepted bid when one
-exists. Closure and the winning bid have their own URLs. Bid history records
-accepted bids. Auction IDs and bid IDs use unsigned 64-bit integers
-(`uint64`). Prices use positive unsigned 64-bit integers.
+**Routing and forwarding.** Generated routing decodes HTTP requests and invokes stateless handlers in `internal/httpapi/handlers.go`. The handlers call a configured gRPC target and translate replies for clients. Closure and winner reads reuse `GetAuction`. The adapter examines the returned status and highest bid and returns 404 if the requested resource is absent. `cmd/server/main.go` wires the local target by default. In the two-node demo, the REST endpoint on node n2 calls gRPC on n1. The Part II executor replaces the Part I dummy backend.
 
-### 1.2 Operations and rules
+**Status.** Absent required strings can decode as empty strings in create and bid bodies. The OpenAPI create response list omits the 409 returned when auction IDs are exhausted.
 
-**Create auction.** Accept item details, a seller name, and a starting price. The
-service assigns a unique auction ID and returns an open auction with that ID, no
-bids, and no winner.
+<div style="break-after: page; page-break-after: always;"></div>
 
-**List auctions.** Return all auctions, optionally filtered by `open` or `closed`.
-Results are ordered numerically by auction ID; no matches produce an empty
-list rather than an error.
+## Part II · State machine and executor
 
-**Get auction.** Return an auction's details and its highest bid, if any. An
-unknown auction ID produces a not-found error.
+### State and command representation
 
-**Get closure.** Return the boolean `true` for a closed auction. An open or
-unknown auction produces a not-found error.
+`proto/auction/v1/sm.proto` defines `State` as a map of auction IDs to auction details, open or closed status, and accepted bids in order. It also stores the last assigned auction ID and the last assigned bid ID. Both counters are global and start at zero. Reads derive the highest bid from the last accepted bid and derive the winner only after closure.
 
-**Get winning bid.** Return the highest accepted bid for a closed auction. An
-open auction, an unknown auction, or a closed auction without bids produces
-a not-found error.
+A `Snapshot` contains a copy of the state and the number of commands applied. `TakeSnapshot` and `Restore` in `internal/sm/sm.go` clone the state so that the snapshot and restored state can be used independently. At startup, `cmd/server/main.go` creates empty state or reads a protobuf text snapshot using `-snapshot`. The snapshot helpers preserve the applied count. The Part II server uses the restored state to start the local executor.
 
-**List bids.** Return an auction's accepted bids in acceptance order. An existing
-auction without bids produces an empty list; an unknown auction is an error.
-
-**Place bid.** Accept an auction ID, bidder name, and amount. The auction must exist
-and be open, and the bidder name must differ from the seller name. The first bid must be at
-least the starting price; subsequent bids must strictly exceed the highest
-accepted bid. An accepted bid is added to history and becomes the highest bid.
-All checks and changes form one read-modify-write operation. A rejected bid
-changes nothing.
-
-**Close auction.** Accept an auction ID and the claimed seller name. The supplied
-seller name must match the auction's seller name. Atomically create the closure
-resource and end bidding. The highest accepted bid at that point is the winning
-bid. Repeating a close request with the correct seller name returns the existing
-closure. Closure is permanent. The service compares the supplied name with the
-stored seller name.
-
-There are no automatic deadlines: closing is an explicit operation. After a close
-takes effect, all later bids are rejected. If a bid and close compete, their order
-in the eventual replicated execution determines whether the bid is accepted.
-
-## 2. Operation categories and consistency
-
-| Operation | Category | Required consistency |
+| `Command` variant | Inputs | Successful `Result` |
 | --- | --- | --- |
-| Create auction | State-changing write | Linearizable |
-| List auctions | Read | Client chooses sequential or linearizable (Default: sequential) |
-| Get auction | Read | Client chooses sequential or linearizable (Default: sequential) |
-| Get closure | Read | Client chooses sequential or linearizable (Default: sequential) |
-| Get winning bid | Read | Client chooses sequential or linearizable (Default: sequential) |
-| List bids | Read | Client chooses sequential or linearizable (Default: sequential) |
-| Place bid | Read-modify-write | Linearizable |
-| Close auction | Read-modify-write | Linearizable |
+| `CreateAuction` | Title, description, seller name, starting price | New auction |
+| `ListAuctions` | Optional status filter | Ordered auction list |
+| `GetAuction` | Auction ID | Auction with derived fields |
+| `ListBids` | Auction ID | Accepted bid list |
+| `PlaceBid` | Auction ID, bidder name, amount | Newly accepted bid |
+| `CloseAuction` | Auction ID, seller name | Auction and flag for first closure |
 
-## 3. REST API
+### Request flow
 
-### 3.1 Operations
+1. **Convert.** The gRPC handlers in `internal/grpcsvc/server.go` pass the request to hand-written converters in `internal/grpcsvc/convert.go`. They construct the appropriate `Command` variant in a protobuf `oneof`. Separate RPC and command messages keep transport options such as read consistency and field masks out of replay.
+2. **Execute.** `Submit` sends a command through the bounded queue in `internal/executor/executor.go` and waits for a reply. One goroutine owns the state and calls `Execute` in queue order. Replies are buffered, so a caller that stops waiting does not stall the executor. A timeout after enqueueing can leave a command pending execution.
+3. **Return.** A `Result` carries a code and either a typed payload or an error message. Converters turn it into a gRPC reply or status. List RPCs can project fields with an optional field mask and stream one item per message. The last message sets `fin: true`. An empty list sends that marker alone. The REST adapter collects the items and treats an ending without `fin` as a failed read.
 
-All request and success bodies use `application/json`. Path parameter
-`auctionId` is a required unsigned 64-bit integer, written in decimal in the URL.
-Negative, non-integer, or out-of-range auction IDs return 400. Every read has the consistency parameter
-described above. HTTP handlers translate requests and responses without holding
-application state.
+### Determinism and atomicity
 
-| Method and path | operationId | Parameters | Request body | Success response | Operation-specific errors |
-| --- | --- | --- | --- | --- | --- |
-| `POST /v1/auctions` | `createAuction` | None | `CreateAuctionBody` | 201: `AuctionReply` | 400: invalid fields |
-| `GET /v1/auctions` | `listAuctions` | Optional `status`; `consistency` | None | 200: `AuctionListReply` | 400: unsupported filter or consistency |
-| `GET /v1/auctions/{auctionId}` | `getAuction` | `auctionId`; `consistency` | None | 200: `AuctionReply` | 400: invalid auction ID or consistency; 404: auction missing |
-| `GET /v1/auctions/{auctionId}/bids` | `listBids` | `auctionId`; `consistency` | None | 200: `BidListReply` | 400: invalid auction ID or consistency; 404: auction missing |
-| `POST /v1/auctions/{auctionId}/bids` | `placeBid` | `auctionId` | `PlaceBidBody` | 201: `BidReply` | 400: invalid fields or seller bidding; 404: auction missing; 409: closed auction or bid too low |
-| `GET /v1/auctions/{auctionId}/closed` | `getAuctionClosed` | `auctionId`, `consistency` | None | 200 with `true` | 404 for an open or missing auction |
-| `PUT /v1/auctions/{auctionId}/closed` | `closeAuction` | `auctionId` | `CloseAuctionBody` | 201 with `true` on creation, 200 with `true` on repeat | 400 for invalid fields, 403 for a seller name mismatch, 404 for a missing auction |
-| `GET /v1/auctions/{auctionId}/winner` | `getAuctionWinner` | `auctionId`, `consistency` | None | 200 with `BidReply` | 404 for an open or missing auction, or a closed auction without bids |
+`Execute` depends only on the current state and command. IDs come from state counters. Auction lists sort numerically by ID, bid histories retain acceptance order, and explicit closure avoids reading a clock. Replaying the same ordered commands from equal states therefore yields equal results and states.
 
-### 3.2 Request and response schemas
+Each write checks its conditions before changing state. For example, placing a bid validates the bidder, auction state, amount, and next ID before appending to history and advancing the counter. A failed final ID check leaves both unchanged. Reads return independent copies, so reply conversion and field masking cannot alter stored state.
 
-The auction includes the optional `highestBid` field once a bid has been
-accepted. The schemas below list required fields.
+**Status.** Both read modes use the same local queue. The forwarding demo uses n1's state for both REST endpoints. Cross-node consistency and log replication are deferred to Part III.
 
-#### Request bodies
+<div style="break-after: page; page-break-after: always;"></div>
 
-| Schema | Fields |
+## Part II · Verification
+
+The state-machine tests in `internal/sm` use protobuf text fixtures, commands, and expectations. Each table case compares the returned result and full state against its expectations, then checks the same command and state through the executor.
+
+| Test case | Expected result |
 | --- | --- |
-| `CreateAuctionBody` | `title`, `description`, `sellerName`: strings; `startingPrice`: uint64 |
-| `PlaceBidBody` | `bidderName`: string; `amount`: uint64 |
-| `CloseAuctionBody` | A seller name string in `sellerName` and the boolean `true` in `closed` |
+| Create an auction | Open auction receives the next ID. |
+| Zero starting price | Invalid argument. |
+| Auction ID exhaustion | Failed precondition before insertion. |
+| List all auctions | Auctions returned in ascending ID order. |
+| Filter for open auctions | Only open auctions returned. |
+| Filter for closed auctions | Only closed auctions returned. |
+| Filter with no matches | Empty auction list. |
+| Explicit unspecified filter | Invalid argument. |
+| Read a known auction | Auction includes its highest accepted bid. |
+| Read an unknown auction | Not found. |
+| Close with bids | Closure is created and the highest bidder wins. |
+| Close without bids | Closure is created with no winner. |
+| Repeat closure | Existing closure is returned. |
+| Close with the wrong seller | Permission denied. |
+| Close a missing auction | Not found. |
+| List bids | Accepted bids returned in acceptance order. |
+| List bids before the first bid | Empty bid list. |
+| List bids on a missing auction | Not found. |
+| First bid at the starting price | Accepted with the next global bid ID. |
+| Bid above the current highest | Appended to history and becomes the highest bid. |
+| Zero bid amount | Invalid argument. |
+| Bid on a missing auction | Not found. |
+| Seller bids on their auction | Invalid argument. |
+| Bid after closure | Failed precondition. |
+| First bid below the starting price | Failed precondition. |
+| Bid ties the highest | Failed precondition with state unchanged. |
+| Bid ID exhaustion | Final check fails with history and counter unchanged. |
+| Empty command | Invalid argument. |
+| Deterministic replay | Same results and states after each command, including rejection. |
+| Snapshot round trip | Restore preserves state, counters, and count without aliasing. |
+| 200 concurrent bids | Every accepted bid appears once, ordered up to the maximum offer. |
+| Queue order and shutdown | FIFO execution, buffered replies, and shutdown signaling. |
+| Deadline waiting for queue space | Submission returns the context deadline error. |
+| Deadline waiting for a reply | Submission returns the context deadline error. |
+| REST and gRPC wiring | Writes appear in reads, streams end with `fin`, and field masks work. |
+| Snapshot startup | REST sees restored data and IDs continue from restored counters. |
+| Injected internal error | REST returns 500. |
+| Injected RPC deadline | REST returns 504. |
+| Live demo | REST operations, rejection checks, and 12 concurrent creates. |
+| Forwarding and backend outage | Both REST endpoints see n1's state. n2 returns 503 after n1 stops. |
 
-#### Response bodies
-
-| Schema | Fields |
-| --- | --- |
-| `AuctionReply` | `auction` (Auction) |
-| `AuctionListReply` | `auctions` (array of Auction) |
-| `BidReply` | `bid` (Bid) |
-| `BidListReply` | `bids` (array of Bid) |
-| `AuctionClosure` | JSON boolean `true` |
-| `Problem` | `type`, `title`, `detail`: strings; `status`: integer |
-
-### 3.3 Errors and status mapping
-
-All error responses use `application/problem+json` with the `Problem` schema.
-Every operation may return 500, 503, or 504; malformed requests return 400.
-
-| gRPC status | HTTP status | Meaning in the service |
-| --- | --- | --- |
-| `INVALID_ARGUMENT` | 400 | Invalid request fields or seller attempting to bid |
-| `PERMISSION_DENIED` | 403 | Supplied seller name does not match when closing |
-| `NOT_FOUND` | 404 | Missing auction, closure, or winning bid |
-| `FAILED_PRECONDITION` | 409 | Auction is closed or bid does not beat the required amount |
-| `UNAVAILABLE` | 503 | Target gRPC service unavailable |
-| `DEADLINE_EXCEEDED` | 504 | Request deadline exceeded |
-| Other errors | 500 | Unexpected server failure |
-
-## 4. REST-to-RPC mapping
-
-The `auction.v1.AuctionService` gRPC service handles creation, reads, bidding,
-and closing. Every RPC has its own request message and response message.
-Each REST handler calls the corresponding RPC and translates its result to the
-response documented in Section 3. Read operations pass the client's consistency
-choice. Errors use gRPC status codes, translated according to Section 3.3.
-
-The four non-list RPCs are unary. `ListAuctions` and `ListBids` send one item per
-message and set `fin: true` on the message carrying the last item. An empty
-result sends one message with just `fin: true`. The HTTP handler collects the
-items into the corresponding JSON list response. If the stream reaches EOF
-without a final marker, the handler returns HTTP 503. Other receive errors use
-the usual gRPC status mapping.
-
-The gRPC list requests accept an optional `field_mask`. The server
-validates the mask and selects fields on each item before streaming it.
-The executor receives the list command and returns full items.
-
-| REST operation | RPC |
-| --- | --- |
-| `createAuction` | `CreateAuction` |
-| `listAuctions` | `ListAuctions` |
-| `getAuction` | `GetAuction` |
-| `getAuctionClosed` | `GetAuction` |
-| `getAuctionWinner` | `GetAuction` |
-| `listBids` | `ListBids` |
-| `placeBid` | `PlaceBid` |
-| `closeAuction` | `CloseAuction` |
-
-## 5. Design choices
-
-- **Explicit closing:** avoids time-dependent auction deadlines and gives the
-  eventual state machine an explicit close command to order against bids.
-- **Strictly increasing bids:** prevent tied winning bids and give a simple
-  state-dependent condition for the required read-modify-write operation.
-
-## 6. Architecture and Part I implementation
-
-Each server process runs an HTTP server, a gRPC server, and a gRPC client. The
-generated HTTP code routes requests and decodes parameters and JSON bodies. The
-strict HTTP handlers construct protobuf requests, call the gRPC service, and
-convert its results into the generated REST response types. Handlers hold only
-the gRPC client, with no application maps or counters.
-
-For example, `GET /v1/auctions/1` reaches `Handlers.GetAuction`, which converts
-the consistency option and calls `AuctionService.GetAuction`. `Server.GetAuction`
-looks up auction 1 in the dummy fixtures. The HTTP handler uses
-`auctionFromProto` to return an `AuctionReply` containing the auction and the
-answering node's ID. RPC errors are translated by `httpStatusFromGRPC` and
-encoded by `writeProblem`.
-
-| Feature | Implementation location |
-| --- | --- |
-| REST specification and generated routing | `api/openapi.yaml`, `api/oapi-codegen.yaml`; generated code in `gen/rest/rest.gen.go` |
-| Internal API and generated gRPC bindings | `proto/auction/v1/auction.proto`; generated code in `gen/auction/v1/` |
-| REST-to-RPC calls and response conversion | HTTP handlers and response converters in `internal/httpapi/handlers.go` |
-| Read consistency option and HTTP error mapping | `internal/httpapi/handlers.go`: `toProtoConsistency`, `httpStatusFromGRPC`, and `writeProblem` |
-| Dummy data and business rules | `internal/grpcsvc/server.go`: `dummyAuctions`, `dummyBids`, and the six `Server` RPC methods |
-| Server registration and forwarding target | `cmd/server/main.go`: `main` |
-| Regeneration and build | `Makefile`: `gen-rest`, `gen-proto`, and `build` |
+Executor tests are in `internal/executor/executor_test.go`. Server tests are in `cmd/server/server_test.go`. `make test` runs the tests with the race detector. `make check` runs `etc/demo.sh` against the live servers, including forwarding and backend shutdown.
