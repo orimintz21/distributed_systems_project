@@ -167,6 +167,15 @@ grpcurl -plaintext -d '{"auctionId":"1"}' localhost:50051 auction.v1.AuctionServ
 grpcurl -plaintext -d '{"auctionId":"1"}' localhost:50051 auction.v1.AuctionService/ListBids
 ```
 
+The gRPC `ListAuctions` and `ListBids` requests accept an optional
+`field_mask` to select fields on each streamed item. Omitting the mask
+returns full items. Empty masks and invalid paths return `INVALID_ARGUMENT`.
+
+```sh
+grpcurl -plaintext -d '{"fieldMask":"id,title,highestBid.amount"}' localhost:50051 auction.v1.AuctionService/ListAuctions
+grpcurl -plaintext -d '{"auctionId":"1","fieldMask":"bidderName,amount"}' localhost:50051 auction.v1.AuctionService/ListBids
+```
+
 ## Repository layout
 
 ```text

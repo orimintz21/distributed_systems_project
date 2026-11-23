@@ -59,11 +59,15 @@ func (s *Server) ListAuctions(req *auctionv1.ListAuctionsRequest, stream auction
 	if err := validateConsistency(req.GetConsistency()); err != nil {
 		return err
 	}
+	mask := req.GetFieldMask()
+	if err := validateFieldMask(mask, &auctionv1.Auction{}); err != nil {
+		return err
+	}
 	result, err := s.submit(stream.Context(), listAuctionsCommand(req))
 	if err != nil {
 		return err
 	}
-	return sendListAuctionsResult(result, stream)
+	return sendListAuctionsResult(result, stream, mask)
 }
 
 func (s *Server) GetAuction(ctx context.Context, req *auctionv1.GetAuctionRequest) (*auctionv1.GetAuctionResponse, error) {
@@ -81,11 +85,15 @@ func (s *Server) ListBids(req *auctionv1.ListBidsRequest, stream auctionv1.Aucti
 	if err := validateConsistency(req.GetConsistency()); err != nil {
 		return err
 	}
+	mask := req.GetFieldMask()
+	if err := validateFieldMask(mask, &auctionv1.Bid{}); err != nil {
+		return err
+	}
 	result, err := s.submit(stream.Context(), listBidsCommand(req))
 	if err != nil {
 		return err
 	}
-	return sendListBidsResult(result, stream)
+	return sendListBidsResult(result, stream, mask)
 }
 
 func (s *Server) PlaceBid(ctx context.Context, req *auctionv1.PlaceBidRequest) (*auctionv1.PlaceBidResponse, error) {

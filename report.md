@@ -166,6 +166,10 @@ items into the corresponding JSON list response. If the stream reaches EOF
 without a final marker, the handler returns HTTP 503. Other receive errors use
 the usual gRPC status mapping.
 
+The gRPC list requests accept an optional `field_mask`. The server
+validates the mask and selects fields on each item before streaming it.
+The executor receives the list command and returns full items.
+
 | REST operation | RPC |
 | --- | --- |
 | `createAuction` | `CreateAuction` |

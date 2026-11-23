@@ -3,6 +3,7 @@ package grpcsvc
 import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
 )
@@ -82,7 +83,7 @@ func closeAuctionResponse(result *auctionv1.Result) (*auctionv1.CloseAuctionResp
 	}, nil
 }
 
-func sendListAuctionsResult(result *auctionv1.Result, stream auctionv1.AuctionService_ListAuctionsServer) error {
+func sendListAuctionsResult(result *auctionv1.Result, stream auctionv1.AuctionService_ListAuctionsServer, mask *fieldmaskpb.FieldMask) error {
 	if err := resultStatus(result); err != nil {
 		return err
 	}
@@ -91,6 +92,9 @@ func sendListAuctionsResult(result *auctionv1.Result, stream auctionv1.AuctionSe
 		return stream.Send(&auctionv1.ListAuctionsResponse{Fin: true})
 	}
 	for i, auction := range auctions {
+		if mask != nil {
+			keepFields(auction.ProtoReflect(), mask.GetPaths())
+		}
 		if err := stream.Send(&auctionv1.ListAuctionsResponse{Auction: auction, Fin: i == len(auctions)-1}); err != nil {
 			return err
 		}
@@ -98,7 +102,7 @@ func sendListAuctionsResult(result *auctionv1.Result, stream auctionv1.AuctionSe
 	return nil
 }
 
-func sendListBidsResult(result *auctionv1.Result, stream auctionv1.AuctionService_ListBidsServer) error {
+func sendListBidsResult(result *auctionv1.Result, stream auctionv1.AuctionService_ListBidsServer, mask *fieldmaskpb.FieldMask) error {
 	if err := resultStatus(result); err != nil {
 		return err
 	}
@@ -107,6 +111,9 @@ func sendListBidsResult(result *auctionv1.Result, stream auctionv1.AuctionServic
 		return stream.Send(&auctionv1.ListBidsResponse{Fin: true})
 	}
 	for i, bid := range bids {
+		if mask != nil {
+			keepFields(bid.ProtoReflect(), mask.GetPaths())
+		}
 		if err := stream.Send(&auctionv1.ListBidsResponse{Bid: bid, Fin: i == len(bids)-1}); err != nil {
 			return err
 		}

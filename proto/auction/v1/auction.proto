@@ -2,6 +2,8 @@
 syntax = "proto3";
 
 package auction.v1;
+import "google/protobuf/field_mask.proto";
+
 option go_package = "github.com/orimintz21/distributed_systems_project/gen/auction/v1;auctionv1";
 
 service AuctionService {
@@ -58,6 +60,8 @@ message ListAuctionsRequest {
   // Absent means all auctions. If present, only OPEN or CLOSED is valid.
   optional AuctionStatus status = 1;
   Consistency consistency = 2;
+  // Fields of each Auction. Omit for all fields. Empty or invalid masks return INVALID_ARGUMENT.
+  google.protobuf.FieldMask field_mask = 3;
 }
 
 // One auction per message, ordered by auction ID. For an empty list, send fin alone.
@@ -78,6 +82,8 @@ message GetAuctionResponse {
 message ListBidsRequest {
   uint64 auction_id = 1;
   Consistency consistency = 2;
+  // Fields of each Bid. Omit for all fields. Empty or invalid masks return INVALID_ARGUMENT.
+  google.protobuf.FieldMask field_mask = 3;
 }
 
 // One bid per message, in acceptance order. For an empty list, send fin alone.

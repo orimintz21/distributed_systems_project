@@ -22,6 +22,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 func exerciseServer(t *testing.T, snapshotPath string, opts ...grpc.ServerOption) (http.Handler, pb.AuctionServiceClient, func()) {
@@ -137,6 +139,10 @@ func TestExecutorWiring(t *testing.T) {
 		t.Errorf("PATCH auction returned %d, want 405", oldClose.Code)
 	}
 
+	t.Run("gRPC field masks", func(t *testing.T) {
+		testListFieldMasks(t, ctx, client)
+	})
+
 	stream, err := client.ListAuctions(ctx, &pb.ListAuctionsRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -168,6 +174,66 @@ func TestExecutorWiring(t *testing.T) {
 	}
 	stop()
 	request(t, handler, "GET", "/v1/auctions/1", "", 503, "executor stopped")
+}
+
+func testListFieldMasks(t *testing.T, ctx context.Context, client pb.AuctionServiceClient) {
+	t.Helper()
+	auctions, err := client.ListAuctions(ctx, &pb.ListAuctionsRequest{
+		FieldMask: &fieldmaskpb.FieldMask{Paths: []string{"title", "highest_bid.amount"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []*pb.Auction{
+		{Title: "Radio", HighestBid: &pb.Bid{Amount: 105}},
+		{Title: "Clock"},
+	} {
+		msg, err := auctions.Recv()
+		if err != nil || !proto.Equal(msg.GetAuction(), want) || msg.GetFin() != (i == 1) {
+			t.Fatalf("masked auction %d: got %v, %v", i, msg, err)
+		}
+	}
+	if _, err := auctions.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("masked auction stream after last item: %v", err)
+	}
+
+	bids, err := client.ListBids(ctx, &pb.ListBidsRequest{
+		AuctionId: 1,
+		FieldMask: &fieldmaskpb.FieldMask{Paths: []string{"bidder_name", "amount"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []*pb.Bid{
+		{BidderName: "Lee", Amount: 100},
+		{BidderName: "Jo", Amount: 105},
+	} {
+		msg, err := bids.Recv()
+		if err != nil || !proto.Equal(msg.GetBid(), want) || msg.GetFin() != (i == 1) {
+			t.Fatalf("masked bid %d: got %v, %v", i, msg, err)
+		}
+	}
+	if _, err := bids.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("masked bid stream after last item: %v", err)
+	}
+
+	invalidAuctions, err := client.ListAuctions(ctx, &pb.ListAuctionsRequest{FieldMask: &fieldmaskpb.FieldMask{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := invalidAuctions.Recv(); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty auction field mask: %v", err)
+	}
+	invalidBids, err := client.ListBids(ctx, &pb.ListBidsRequest{
+		AuctionId: 2,
+		FieldMask: &fieldmaskpb.FieldMask{Paths: []string{"amount.cents"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := invalidBids.Recv(); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid bid field mask on an empty list: %v", err)
+	}
 }
 
 // TestExecutorWiringFromSnapshot checks restored state, ID allocation, and malformed snapshot handling.
