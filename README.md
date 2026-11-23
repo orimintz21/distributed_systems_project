@@ -1,4 +1,4 @@
-# Auction House — Part I: Application API
+# Auction House
 
 An auction service for creating auctions, inspecting accepted bids, placing bids,
 and closing auctions. The client API is defined in [api/openapi.yaml](api/openapi.yaml)
@@ -10,9 +10,8 @@ client --REST/JSON--> HTTP handlers --gRPC--> AuctionService
                      internal/httpapi      internal/grpcsvc
 ```
 
-Part I uses fixed dummy data. Writes return simulated results without changing
-the fixtures. The deterministic state machine and replicated log belong to
-Parts II and III.
+The gRPC service submits each command to an executor. One goroutine applies
+commands in queue order to the in-memory auction state.
 
 ## Build and run
 
@@ -34,16 +33,20 @@ make run     # regenerates, vets, builds, and starts n1
 `make setup` selects the latest generator versions and may update `go.mod`.
 Use `make build` to regenerate, vet, and build `bin/server` without starting it.
 
-In another terminal:
+In another terminal, create an auction and read it back:
 
 ```sh
-./etc/demo.sh http://localhost:8080
+curl -fsS -H 'Content-Type: application/json' \
+  -d '{"title":"Radio","description":"Shortwave","sellerName":"Dana","startingPrice":100}' \
+  http://localhost:8080/v1/auctions
+curl -fsS http://localhost:8080/v1/auctions/1
 ```
 
-For forwarding, leave n1 running, start `make run2` in another terminal, then run:
+For forwarding, leave n1 running, start `make run2` in another terminal, and
+read the auction through n2:
 
 ```sh
-./etc/demo.sh http://localhost:8081
+curl -fsS http://localhost:8081/v1/auctions/1
 ```
 
 | Node | REST address | gRPC address | gRPC target used by REST handlers |
@@ -55,22 +58,22 @@ The `-id` flag labels each process's startup and shutdown logs. To verify
 forwarding, stop n1 and check that n2 returns HTTP 503 as shown below. Stop
 manually started servers with Ctrl+C.
 
-## Demonstration scripts
+## State and snapshots
 
-`etc/demo.sh` sends requests to an already-running server, checks expected HTTP
-status codes and error content types, and prints response bodies.
-
-To automate the setup:
+The server starts with empty state by default. To start from a protobuf-text
+`Snapshot` defined in `proto/auction/v1/sm.proto`, pass its file to the server:
 
 ```sh
-make check
+./bin/server -snapshot path/to/snapshot.txtpb
 ```
 
-This runs `etc/check.sh`: regenerate, vet, build, start n1 and n2, and run
-`demo.sh` against both. It then stops n1 and runs the unavailable-backend demo
-through n2. It uses REST ports 18080/18081 and gRPC ports 15051/15052, cleans up
-its servers, and prints `ALL CHECKS PASSED` on success. All API checks run through
-`demo.sh`.
+Each process owns its local state. Writes affect subsequent requests to the
+same gRPC server and live in memory for the lifetime of that process.
+
+## Demonstration scripts
+
+The main `etc/demo.sh` and `make check` scenarios use the Part I fixture
+responses. The Part II server tests in Step 5 update those scenarios.
 
 To demonstrate an unavailable backend manually, stop n1 while leaving n2 running:
 
@@ -107,27 +110,6 @@ Errors use `application/problem+json`: 400 for invalid requests or seller biddin
 auctions or low bids, 500 for unexpected failures, 503 for an unavailable gRPC
 service, and 504 for a gRPC deadline exceeded.
 
-## Dummy fixtures
-
-All fixture auctions have seller `seller` and starting price 1000 cents.
-
-| Auction ID | Status | Accepted bid amounts, in order | Winner |
-| --- | --- | --- | --- |
-| 1 | open | 1500, 2000 | None yet |
-| 2 | closed | 1500, 2000 | `bidder` |
-| 3 | open | None | None |
-| 4 | closed | None | None |
-
-Other auction IDs, such as 999, return 404. Creation always returns auction ID 5;
-successful bid placement always returns bid ID 6. These are dummy values: a created
-auction cannot subsequently be retrieved, a placed bid does not appear in history,
-and closing auction 1 does not change later reads of auction 1.
-
-For auction 1, a new bid must exceed 2000 cents. For auction 3, a first bid of
-1000 cents is accepted. The seller cannot bid on their own auction. Closing with
-`sellerName: "seller"` returns a simulated closed auction; another seller name
-returns 403. Supplied names are business-rule inputs, with no authentication.
-
 ## API documentation and gRPC inspection
 
 With n1 running, open:
@@ -152,7 +134,7 @@ With `grpcurl` installed, reflection allows direct inspection of n1:
 grpcurl -plaintext localhost:50051 list
 grpcurl -plaintext -d '{}' localhost:50051 auction.v1.AuctionService/ListAuctions
 grpcurl -plaintext -d '{"auctionId":"1"}' localhost:50051 auction.v1.AuctionService/GetAuction
-grpcurl -plaintext -d '{"auctionId":"3"}' localhost:50051 auction.v1.AuctionService/ListBids
+grpcurl -plaintext -d '{"auctionId":"1"}' localhost:50051 auction.v1.AuctionService/ListBids
 ```
 
 ## Repository layout
@@ -162,7 +144,9 @@ api/openapi.yaml                 REST API specification
 api/oapi-codegen.yaml            HTTP code-generation settings
 api/spec.go, docs.html, editor.html  Embedded specification and Swagger pages
 proto/auction/v1/auction.proto   Internal gRPC service and messages
-internal/grpcsvc/server.go       Dummy fixtures and RPC implementations
+internal/grpcsvc/                RPC handlers and command and result conversions
+internal/executor/               Command queue and executor
+internal/sm/                     State machine and command tests
 internal/httpapi/handlers.go     REST-to-gRPC translation and error mapping
 cmd/server/main.go              Server wiring, flags, and forwarding target
 etc/demo.sh                     API requests and response checks

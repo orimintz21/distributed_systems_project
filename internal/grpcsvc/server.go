@@ -1,69 +1,39 @@
 // Package grpcsvc implements the AuctionService gRPC service.
-//
-// STEP 4 — In Part I every RPC returns a dummy response to exercise gRPC calls
-// between processes. In Part II this type will apply operations to the state
-// machine; in Part III it will submit them to the replicated log.
 package grpcsvc
 
 import (
 	"context"
-	"slices"
+	"errors"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 
 	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
+	"github.com/orimintz21/distributed_systems_project/internal/executor"
 )
 
-// Server serves dummy auctions.
+// Server serves auction commands through a shared executor.
 type Server struct {
 	auctionv1.UnimplementedAuctionServiceServer
 	NodeID string
+	exec   *executor.Executor
 }
 
 var _ auctionv1.AuctionServiceServer = (*Server)(nil)
 
-func New(nodeID string) *Server { return &Server{NodeID: nodeID} }
-
-// Fixed bid histories in acceptance order. These fixtures are read-only;
-// dummy write RPCs return simulated results without updating them.
-var dummyBids = map[uint64][]*auctionv1.Bid{
-	1: {
-		{Id: 1, AuctionId: 1, BidderName: "first-bidder", Amount: 1500},
-		{Id: 2, AuctionId: 1, BidderName: "bidder", Amount: 2000},
-	},
-	2: {
-		{Id: 3, AuctionId: 2, BidderName: "first-bidder", Amount: 1500},
-		{Id: 4, AuctionId: 2, BidderName: "bidder", Amount: 2000},
-	},
+func New(nodeID string, exec *executor.Executor) *Server {
+	return &Server{NodeID: nodeID, exec: exec}
 }
 
-// Fixture IDs: 1=open with bids, 2=closed with bids, 3=open without bids,
-// 4=closed without bids. Other IDs return NOT_FOUND.
-var dummyAuctions = map[uint64]*auctionv1.Auction{
-	1: {
-		Id: 1, Title: "Example item", Description: "Dummy auction",
-		SellerName: "seller", StartingPrice: 1000,
-		Status:     auctionv1.AuctionStatus_AUCTION_STATUS_OPEN,
-		HighestBid: dummyBids[1][1],
-	},
-	2: {
-		Id: 2, Title: "Example item", Description: "Dummy auction",
-		SellerName: "seller", StartingPrice: 1000,
-		Status:     auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED,
-		HighestBid: dummyBids[2][1], WinnerName: proto.String("bidder"),
-	},
-	3: {
-		Id: 3, Title: "Example item", Description: "Dummy auction",
-		SellerName: "seller", StartingPrice: 1000,
-		Status: auctionv1.AuctionStatus_AUCTION_STATUS_OPEN,
-	},
-	4: {
-		Id: 4, Title: "Example item", Description: "Dummy auction",
-		SellerName: "seller", StartingPrice: 1000,
-		Status: auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED,
-	},
+func (s *Server) submit(ctx context.Context, cmd *auctionv1.Command) (*auctionv1.Result, error) {
+	result, err := s.exec.Submit(ctx, cmd)
+	if errors.Is(err, executor.ErrStopped) {
+		return nil, status.Error(codes.Unavailable, err.Error())
+	}
+	if err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	return result, nil
 }
 
 func validateConsistency(consistency auctionv1.Consistency) error {
@@ -78,114 +48,58 @@ func validateConsistency(consistency auctionv1.Consistency) error {
 }
 
 func (s *Server) CreateAuction(ctx context.Context, req *auctionv1.CreateAuctionRequest) (*auctionv1.CreateAuctionResponse, error) {
-	if req.GetStartingPrice() == 0 {
-		return nil, status.Error(codes.InvalidArgument, "starting price must be positive")
+	result, err := s.submit(ctx, createAuctionCommand(req))
+	if err != nil {
+		return nil, err
 	}
-	return &auctionv1.CreateAuctionResponse{
-		Auction: &auctionv1.Auction{
-			Id: 5, Title: req.GetTitle(), Description: req.GetDescription(),
-			SellerName: req.GetSellerName(), StartingPrice: req.GetStartingPrice(),
-			Status: auctionv1.AuctionStatus_AUCTION_STATUS_OPEN,
-		},
-	}, nil
+	return createAuctionResponse(result)
 }
 
 func (s *Server) ListAuctions(req *auctionv1.ListAuctionsRequest, stream auctionv1.AuctionService_ListAuctionsServer) error {
 	if err := validateConsistency(req.GetConsistency()); err != nil {
 		return err
 	}
-	if req.Status != nil && req.GetStatus() != auctionv1.AuctionStatus_AUCTION_STATUS_OPEN && req.GetStatus() != auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED {
-		return status.Errorf(codes.InvalidArgument, "unsupported auction status %d", req.GetStatus())
+	result, err := s.submit(stream.Context(), listAuctionsCommand(req))
+	if err != nil {
+		return err
 	}
-	ids := make([]uint64, 0, len(dummyAuctions))
-	for id, auction := range dummyAuctions {
-		if req.Status == nil || auction.Status == req.GetStatus() {
-			ids = append(ids, id)
-		}
-	}
-	if len(ids) == 0 {
-		return stream.Send(&auctionv1.ListAuctionsResponse{Fin: true})
-	}
-	slices.Sort(ids)
-	for i, id := range ids {
-		if err := stream.Send(&auctionv1.ListAuctionsResponse{
-			Auction: dummyAuctions[id], Fin: i == len(ids)-1,
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return sendListAuctionsResult(result, stream)
 }
 
 func (s *Server) GetAuction(ctx context.Context, req *auctionv1.GetAuctionRequest) (*auctionv1.GetAuctionResponse, error) {
 	if err := validateConsistency(req.GetConsistency()); err != nil {
 		return nil, err
 	}
-	auction, ok := dummyAuctions[req.GetAuctionId()]
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "auction %d not found", req.GetAuctionId())
+	result, err := s.submit(ctx, getAuctionCommand(req))
+	if err != nil {
+		return nil, err
 	}
-	return &auctionv1.GetAuctionResponse{Auction: auction}, nil
+	return getAuctionResponse(result)
 }
 
 func (s *Server) ListBids(req *auctionv1.ListBidsRequest, stream auctionv1.AuctionService_ListBidsServer) error {
 	if err := validateConsistency(req.GetConsistency()); err != nil {
 		return err
 	}
-	if _, ok := dummyAuctions[req.GetAuctionId()]; !ok {
-		return status.Errorf(codes.NotFound, "auction %d not found", req.GetAuctionId())
+	result, err := s.submit(stream.Context(), listBidsCommand(req))
+	if err != nil {
+		return err
 	}
-	bids := dummyBids[req.GetAuctionId()]
-	if len(bids) == 0 {
-		return stream.Send(&auctionv1.ListBidsResponse{Fin: true})
-	}
-	for i, bid := range bids {
-		if err := stream.Send(&auctionv1.ListBidsResponse{
-			Bid: bid, Fin: i == len(bids)-1,
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return sendListBidsResult(result, stream)
 }
 
 func (s *Server) PlaceBid(ctx context.Context, req *auctionv1.PlaceBidRequest) (*auctionv1.PlaceBidResponse, error) {
-	if req.GetAmount() == 0 {
-		return nil, status.Error(codes.InvalidArgument, "bid amount must be positive")
+	result, err := s.submit(ctx, placeBidCommand(req))
+	if err != nil {
+		return nil, err
 	}
-	auction, ok := dummyAuctions[req.GetAuctionId()]
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "auction %d not found", req.GetAuctionId())
-	}
-	if req.GetBidderName() == auction.SellerName {
-		return nil, status.Error(codes.InvalidArgument, "seller cannot bid on their own auction")
-	}
-	if auction.Status == auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED {
-		return nil, status.Error(codes.FailedPrecondition, "auction is closed")
-	}
-	if req.GetAmount() < auction.StartingPrice || (auction.HighestBid != nil && req.GetAmount() <= auction.HighestBid.Amount) {
-		return nil, status.Error(codes.FailedPrecondition, "bid is too low")
-	}
-	return &auctionv1.PlaceBidResponse{
-		Bid: &auctionv1.Bid{
-			Id: 6, AuctionId: auction.Id, BidderName: req.GetBidderName(), Amount: req.GetAmount(),
-		},
-	}, nil
+	return placeBidResponse(result)
 }
 
 func (s *Server) CloseAuction(ctx context.Context, req *auctionv1.CloseAuctionRequest) (*auctionv1.CloseAuctionResponse, error) {
-	auction, ok := dummyAuctions[req.GetAuctionId()]
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "auction %d not found", req.GetAuctionId())
+	result, err := s.submit(ctx, closeAuctionCommand(req))
+	if err != nil {
+		return nil, err
 	}
-	if req.GetSellerName() != auction.SellerName {
-		return nil, status.Error(codes.PermissionDenied, "seller name does not match")
-	}
-	// Work on a copy so closing never modifies the shared dummy data.
-	auction = proto.Clone(auction).(*auctionv1.Auction)
-	auction.Status = auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED
-	if auction.HighestBid != nil {
-		auction.WinnerName = proto.String(auction.HighestBid.BidderName)
-	}
-	return &auctionv1.CloseAuctionResponse{Auction: auction}, nil
+	return closeAuctionResponse(result)
 }

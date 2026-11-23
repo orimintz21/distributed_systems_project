@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -21,11 +22,14 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/protobuf/encoding/prototext"
 
 	"github.com/orimintz21/distributed_systems_project/api"
 	auctionv1 "github.com/orimintz21/distributed_systems_project/gen/auction/v1"
+	"github.com/orimintz21/distributed_systems_project/internal/executor"
 	"github.com/orimintz21/distributed_systems_project/internal/grpcsvc"
 	"github.com/orimintz21/distributed_systems_project/internal/httpapi"
+	"github.com/orimintz21/distributed_systems_project/internal/sm"
 )
 
 func main() {
@@ -33,11 +37,19 @@ func main() {
 	httpAddr := flag.String("http", ":8080", "client REST listen address")
 	grpcAddr := flag.String("grpc", ":50051", "internal gRPC listen address")
 	target := flag.String("target", "", "gRPC address the REST handlers call (default: this node)")
+	snapshotPath := flag.String("snapshot", "", "start from a Snapshot in protobuf text format")
 	corsOrigin := flag.String("cors-origin", "", `allowed CORS origin for browser tools on another port, e.g. "*" (dev only; empty = off)`)
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	state, err := loadInitialState(*snapshotPath)
+	if err != nil {
+		log.Fatalf("[%s] load snapshot %q: %v", *id, *snapshotPath, err)
+	}
+	exec := executor.New(state)
+	go exec.Run(ctx)
 
 	// --- gRPC server (step 4) ----------------------------------------------
 	lis, err := net.Listen("tcp", *grpcAddr)
@@ -45,7 +57,7 @@ func main() {
 		log.Fatalf("listen %s: %v", *grpcAddr, err)
 	}
 	gs := grpc.NewServer()
-	auctionv1.RegisterAuctionServiceServer(gs, grpcsvc.New(*id))
+	auctionv1.RegisterAuctionServiceServer(gs, grpcsvc.New(*id, exec))
 	reflection.Register(gs) // lets you poke the server with grpcurl
 	go func() {
 		log.Printf("[%s] gRPC listening on %s", *id, *grpcAddr)
@@ -99,6 +111,22 @@ func main() {
 	defer cancel()
 	_ = hs.Shutdown(shutdownCtx)
 	gs.GracefulStop()
+}
+
+func loadInitialState(snapshotPath string) (*auctionv1.State, error) {
+	if snapshotPath == "" {
+		return sm.NewState(), nil
+	}
+	data, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &auctionv1.Snapshot{}
+	if err := prototext.Unmarshal(data, snapshot); err != nil {
+		return nil, err
+	}
+	state, _ := sm.Restore(snapshot)
+	return state, nil
 }
 
 // portOf turns ":50051" or "0.0.0.0:50051" into ":50051".
