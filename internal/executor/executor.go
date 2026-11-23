@@ -36,9 +36,11 @@ type Executor struct {
 
 // New returns an executor over the given state.
 func New(state *auctionv1.State) *Executor {
-	e := &Executor{state: state}
-	// TODO 3: Initialize both channels, with capacity QueueLen for the queue.
-	return e
+	return &Executor{
+		state:   state,
+		queue:   make(chan request, QueueLen),
+		stopped: make(chan struct{}),
+	}
 }
 
 // Submit enqueues cmd and waits for its result.
