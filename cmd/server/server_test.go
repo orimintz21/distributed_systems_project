@@ -61,7 +61,7 @@ func exerciseServer(t *testing.T, snapshotPath string, opts ...grpc.ServerOption
 	return httpapi.NewHTTPHandler(client, http.NewServeMux()), client, stop
 }
 
-func request(t *testing.T, handler http.Handler, method, target, body string, code int, pieces ...string) {
+func request(t *testing.T, handler http.Handler, method, target, body string, code int, pieces ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -82,6 +82,7 @@ func request(t *testing.T, handler http.Handler, method, target, body string, co
 			t.Fatalf("%s %s: body %s missing %s", method, target, res.Body, piece)
 		}
 	}
+	return res
 }
 
 // TestExecutorWiring checks state changes through REST, gRPC stream completion, and shutdown errors.
@@ -95,14 +96,46 @@ func TestExecutorWiring(t *testing.T) {
 		`{"title":"Radio","description":"Shortwave","sellerName":"Dana","startingPrice":100}`, 201, `"id":1`)
 	request(t, handler, "POST", "/v1/auctions",
 		`{"title":"Clock","description":"Desk clock","sellerName":"Lee","startingPrice":50}`, 201, `"id":2`)
-	request(t, handler, "GET", "/v1/auctions/1?consistency=linearizable", "", 200, `"title":"Radio"`, `"status":"open"`)
+	request(t, handler, "GET", "/v1/auctions/1?consistency=linearizable", "", 200, `"title":"Radio"`)
 	request(t, handler, "GET", "/v1/auctions/1/bids", "", 200, `"bids":[]`)
 	request(t, handler, "POST", "/v1/auctions/1/bids", `{"bidderName":"Lee","amount":100}`, 201, `"id":1`)
 	request(t, handler, "GET", "/v1/auctions/1/bids", "", 200, `"amount":100`)
-	request(t, handler, "PATCH", "/v1/auctions/1", `{"sellerName":"Dana","status":"closed"}`, 200, `"status":"closed"`, `"winnerName":"Lee"`)
-	request(t, handler, "GET", "/v1/auctions/1", "", 200, `"status":"closed"`, `"winnerName":"Lee"`)
+	request(t, handler, "POST", "/v1/auctions/1/bids", `{"bidderName":"Jo","amount":105}`, 201, `"id":2`)
+	request(t, handler, "GET", "/v1/auctions/1/closed", "", 404, "auction is open")
+	request(t, handler, "GET", "/v1/auctions/1/winner", "", 404, "auction has no winning bid")
+	request(t, handler, "PUT", "/v1/auctions/1/closed", `{"sellerName":"Dana","closed":false}`, 400, "closed must be true")
+	request(t, handler, "PUT", "/v1/auctions/1/closed", `{"sellerName":"Dana"}`, 400, "closed must be true")
+	request(t, handler, "PUT", "/v1/auctions/1/closed", `{"closed":true}`, 400, "sellerName is required")
+	request(t, handler, "PUT", "/v1/auctions/1/closed", `{"sellerName":"Lee","closed":true}`, 403, "seller name does not match")
+	closed := request(t, handler, "PUT", "/v1/auctions/1/closed", `{"sellerName":"Dana","closed":true}`, 201)
+	if location, body := closed.Header().Get("Location"), strings.TrimSpace(closed.Body.String()); location != "" || body != "true" {
+		t.Fatalf("new closure: Location = %q, body = %q", location, body)
+	}
+	request(t, handler, "PUT", "/v1/auctions/1/closed", `{"sellerName":"Dana","closed":true}`, 200, "true")
+	request(t, handler, "GET", "/v1/auctions/1/closed?consistency=linearizable", "", 200, "true")
+	request(t, handler, "GET", "/v1/auctions/1/winner?consistency=linearizable", "", 200,
+		`"bid":{`, `"amount":105`, `"auctionId":1`, `"bidderName":"Jo"`, `"id":2`)
+	for _, path := range []string{"/v1/auctions/1", "/v1/auctions?status=closed"} {
+		auction := request(t, handler, "GET", path, "", 200, `"title":"Radio"`, `"highestBid"`)
+		for _, field := range []string{`"status"`, `"winnerName"`, `"closed"`} {
+			if strings.Contains(auction.Body.String(), field) {
+				t.Errorf("GET %s: unexpected field %s in %s", path, field, auction.Body)
+			}
+		}
+	}
 	request(t, handler, "POST", "/v1/auctions/1/bids", `{"bidderName":"Jo","amount":110}`, 409, "auction is closed")
+	request(t, handler, "PUT", "/v1/auctions/2/closed", `{"sellerName":"Lee","closed":true}`, 201, "true")
+	request(t, handler, "GET", "/v1/auctions/2/winner", "", 404, "auction has no winning bid")
 	request(t, handler, "GET", "/v1/auctions/99", "", 404, "auction 99 not found")
+	for _, resource := range []string{"closed", "winner"} {
+		request(t, handler, "GET", "/v1/auctions/99/"+resource, "", 404, "auction 99 not found")
+		request(t, handler, "GET", "/v1/auctions/1/"+resource+"?consistency=unknown", "", 400, "consistency must be")
+	}
+	oldClose := httptest.NewRecorder()
+	handler.ServeHTTP(oldClose, httptest.NewRequest(http.MethodPatch, "/v1/auctions/1", nil))
+	if oldClose.Code != http.StatusMethodNotAllowed {
+		t.Errorf("PATCH auction returned %d, want 405", oldClose.Code)
+	}
 
 	stream, err := client.ListAuctions(ctx, &pb.ListAuctionsRequest{})
 	if err != nil {
@@ -146,6 +179,15 @@ func TestExecutorWiringFromSnapshot(t *testing.T) {
 			last_auction_id: 7
 			last_bid_id: 2
 			auctions {
+				key: 6
+				value {
+					auction {
+						id: 6 title: "Closed auction" seller_name: "Dana" starting_price: 60 status: AUCTION_STATUS_CLOSED
+					}
+					bids { id: 1 auction_id: 6 bidder_name: "Lee" amount: 70 }
+				}
+			}
+			auctions {
 				key: 7
 				value {
 					auction {
@@ -160,6 +202,9 @@ func TestExecutorWiringFromSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler, _, _ := exerciseServer(t, path)
+	request(t, handler, "GET", "/v1/auctions/6/closed", "", 200, "true")
+	request(t, handler, "GET", "/v1/auctions/6/winner", "", 200, `"bidderName":"Lee"`, `"amount":70`)
+	request(t, handler, "PUT", "/v1/auctions/6/closed", `{"sellerName":"Dana","closed":true}`, 200, "true")
 	request(t, handler, "GET", "/v1/auctions/7", "", 200, `"title":"Saved auction"`, `"amount":90`)
 	request(t, handler, "POST", "/v1/auctions/7/bids", `{"bidderName":"Lee","amount":100}`, 201, `"id":3`)
 	request(t, handler, "POST", "/v1/auctions",

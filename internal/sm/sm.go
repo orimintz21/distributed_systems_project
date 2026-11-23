@@ -164,8 +164,11 @@ func closeAuction(s *auctionv1.State, c *auctionv1.CloseAuction) *auctionv1.Resu
 	if c.GetSellerName() != auction.GetSellerName() {
 		return fail(auctionv1.Code_CODE_PERMISSION_DENIED, "seller name does not match")
 	}
+	created := auction.GetStatus() != auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED
 	auction.Status = auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED
-	return &auctionv1.Result{Content: &auctionv1.Result_Auction{Auction: auctionView(entry)}}
+	return &auctionv1.Result{Content: &auctionv1.Result_CloseAuction{
+		CloseAuction: &auctionv1.CloseAuctionResult{Auction: auctionView(entry), Created: created},
+	}}
 }
 
 // Accepted bids increase strictly, so the last accepted bid is the highest.

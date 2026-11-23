@@ -78,11 +78,17 @@ message Result {
   string message = 2; // Error detail when the code is not OK.
   // Successful commands set content, including when a list is empty.
   oneof content {
-    Auction auction = 3; // CreateAuction, GetAuction, CloseAuction.
+    Auction auction = 3; // CreateAuction, GetAuction.
     Bid bid = 4; // PlaceBid.
     AuctionList auction_list = 5; // ListAuctions.
     BidList bid_list = 6; // ListBids.
+    CloseAuctionResult close_auction = 7;
   }
+}
+
+message CloseAuctionResult {
+  Auction auction = 1;
+  bool created = 2; // True if this command closed an open auction.
 }
 
 message AuctionList {

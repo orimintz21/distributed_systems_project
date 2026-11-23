@@ -115,27 +115,55 @@ func (h *Handlers) CreateAuction(ctx context.Context, req rest.CreateAuctionRequ
 
 // GET /v1/auctions/{auctionId}
 func (h *Handlers) GetAuction(ctx context.Context, req rest.GetAuctionRequestObject) (rest.GetAuctionResponseObject, error) {
-	consistency, err := toProtoConsistency(req.Params.Consistency)
+	auction, err := h.readAuction(ctx, req.AuctionId, req.Params.Consistency)
 	if err != nil {
 		return nil, err
 	}
-	response, err := h.Auction.GetAuction(ctx, &auctionv1.GetAuctionRequest{AuctionId: req.AuctionId, Consistency: consistency})
-	if err != nil {
-		return nil, err
-	}
-	return rest.GetAuction200JSONResponse{Auction: auctionFromProto(response.GetAuction())}, nil
+	return rest.GetAuction200JSONResponse{Auction: auctionFromProto(auction)}, nil
 }
 
-// PATCH /v1/auctions/{auctionId}
-func (h *Handlers) CloseAuction(ctx context.Context, req rest.CloseAuctionRequestObject) (rest.CloseAuctionResponseObject, error) {
-	if req.Body == nil || req.Body.Status != rest.CloseAuctionBodyStatusClosed {
-		return nil, status.Error(codes.InvalidArgument, "status must be closed")
-	}
-	response, err := h.Auction.CloseAuction(ctx, &auctionv1.CloseAuctionRequest{AuctionId: req.AuctionId, SellerName: req.Body.SellerName})
+// GET /v1/auctions/{auctionId}/closed
+func (h *Handlers) GetAuctionClosed(ctx context.Context, req rest.GetAuctionClosedRequestObject) (rest.GetAuctionClosedResponseObject, error) {
+	auction, err := h.readAuction(ctx, req.AuctionId, req.Params.Consistency)
 	if err != nil {
 		return nil, err
 	}
-	return rest.CloseAuction200JSONResponse{Auction: auctionFromProto(response.GetAuction())}, nil
+	if auction.GetStatus() != auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED {
+		return nil, status.Error(codes.NotFound, "auction is open")
+	}
+	return rest.GetAuctionClosed200JSONResponse(true), nil
+}
+
+// PUT /v1/auctions/{auctionId}/closed
+func (h *Handlers) CloseAuction(ctx context.Context, req rest.CloseAuctionRequestObject) (rest.CloseAuctionResponseObject, error) {
+	if req.Body == nil || !req.Body.Closed {
+		return nil, status.Error(codes.InvalidArgument, "closed must be true")
+	}
+	if req.Body.SellerName == nil {
+		return nil, status.Error(codes.InvalidArgument, "sellerName is required")
+	}
+	response, err := h.Auction.CloseAuction(ctx, &auctionv1.CloseAuctionRequest{
+		AuctionId: req.AuctionId, SellerName: *req.Body.SellerName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if response.GetCreated() {
+		return rest.CloseAuction201JSONResponse(true), nil
+	}
+	return rest.CloseAuction200JSONResponse(true), nil
+}
+
+// GET /v1/auctions/{auctionId}/winner
+func (h *Handlers) GetAuctionWinner(ctx context.Context, req rest.GetAuctionWinnerRequestObject) (rest.GetAuctionWinnerResponseObject, error) {
+	auction, err := h.readAuction(ctx, req.AuctionId, req.Params.Consistency)
+	if err != nil {
+		return nil, err
+	}
+	if auction.GetStatus() != auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED || auction.GetHighestBid() == nil {
+		return nil, status.Error(codes.NotFound, "auction has no winning bid")
+	}
+	return rest.GetAuctionWinner200JSONResponse{Bid: bidFromProto(auction.GetHighestBid())}, nil
 }
 
 // GET /v1/auctions/{auctionId}/bids
@@ -186,6 +214,18 @@ func (h *Handlers) PlaceBid(ctx context.Context, req rest.PlaceBidRequestObject)
 // Helpers: REST <-> protobuf conversions and error mapping
 // ---------------------------------------------------------------------------
 
+func (h *Handlers) readAuction(ctx context.Context, id uint64, requested *rest.Consistency) (*auctionv1.Auction, error) {
+	consistency, err := toProtoConsistency(requested)
+	if err != nil {
+		return nil, err
+	}
+	response, err := h.Auction.GetAuction(ctx, &auctionv1.GetAuctionRequest{AuctionId: id, Consistency: consistency})
+	if err != nil {
+		return nil, err
+	}
+	return response.GetAuction(), nil
+}
+
 func toProtoConsistency(consistency *rest.Consistency) (auctionv1.Consistency, error) {
 	if consistency == nil || *consistency == rest.Sequential {
 		return auctionv1.Consistency_CONSISTENCY_SEQUENTIAL, nil
@@ -200,13 +240,6 @@ func auctionFromProto(auction *auctionv1.Auction) rest.Auction {
 	response := rest.Auction{
 		Id: auction.GetId(), Title: auction.GetTitle(), Description: auction.GetDescription(),
 		SellerName: auction.GetSellerName(), StartingPrice: auction.GetStartingPrice(),
-		WinnerName: auction.WinnerName,
-	}
-	switch auction.GetStatus() {
-	case auctionv1.AuctionStatus_AUCTION_STATUS_OPEN:
-		response.Status = rest.AuctionStatusOpen
-	case auctionv1.AuctionStatus_AUCTION_STATUS_CLOSED:
-		response.Status = rest.AuctionStatusClosed
 	}
 	if auction.GetHighestBid() != nil {
 		bid := bidFromProto(auction.GetHighestBid())

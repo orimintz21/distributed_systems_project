@@ -23,9 +23,7 @@ There are two domain objects: auctions and accepted bids.
 | `description` | string | Description of the item |
 | `sellerName` | string | Name of the seller |
 | `startingPrice` | uint64 | Minimum first bid, in integer cents |
-| `status` | `open` or `closed` | Whether bidding is permitted |
 | `highestBid` | Bid (optional) | Highest accepted bid; omitted before any bid |
-| `winnerName` | string (optional) | Name of the highest bidder when closed; otherwise omitted |
 
 | Bid field | Type | Meaning |
 | --- | --- | --- |
@@ -34,10 +32,10 @@ There are two domain objects: auctions and accepted bids.
 | `bidderName` | string | Name of the person placing the bid |
 | `amount` | uint64 | Offered amount, in integer cents |
 
-`Auction` is the API representation of an auction and includes derived fields.
-`highestBid` and `winnerName` do not require separate domain objects. Rejected bids
-are not recorded in bid history. Auction IDs, bid IDs, and prices use unsigned 64-bit
-integers (`uint64`); prices must also be greater than zero.
+The REST `Auction` representation includes the highest accepted bid when one
+exists. Closure and the winning bid have their own URLs. Bid history records
+accepted bids. Auction IDs and bid IDs use unsigned 64-bit integers
+(`uint64`). Prices use positive unsigned 64-bit integers.
 
 ### 1.2 Operations and rules
 
@@ -49,8 +47,15 @@ bids, and no winner.
 Results are ordered numerically by auction ID; no matches produce an empty
 list rather than an error.
 
-**Get auction.** Return an auction's details, including its highest bid and final
-winner, if any. An unknown auction ID produces a not-found error.
+**Get auction.** Return an auction's details and its highest bid, if any. An
+unknown auction ID produces a not-found error.
+
+**Get closure.** Return the boolean `true` for a closed auction. An open or
+unknown auction produces a not-found error.
+
+**Get winning bid.** Return the highest accepted bid for a closed auction. An
+open auction, an unknown auction, or a closed auction without bids produces
+a not-found error.
 
 **List bids.** Return an auction's accepted bids in acceptance order. An existing
 auction without bids produces an empty list; an unknown auction is an error.
@@ -63,11 +68,11 @@ All checks and changes form one read-modify-write operation. A rejected bid
 changes nothing.
 
 **Close auction.** Accept an auction ID and the claimed seller name. The supplied
-seller name must match the auction's seller name. Atomically mark the auction closed and
-finalize the highest accepted bidder as the winner. If there are no bids, the
-auction closes without a winner. Repeating a close request with the correct seller
-name returns the existing result without changing it. A closed auction cannot be
-reopened. Comparing supplied names is a business rule, not authentication.
+seller name must match the auction's seller name. Atomically create the closure
+resource and end bidding. The highest accepted bid at that point is the winning
+bid. Repeating a close request with the correct seller name returns the existing
+closure. Closure is permanent. The service compares the supplied name with the
+stored seller name.
 
 There are no automatic deadlines: closing is an explicit operation. After a close
 takes effect, all later bids are rejected. If a bid and close compete, their order
@@ -80,6 +85,8 @@ in the eventual replicated execution determines whether the bid is accepted.
 | Create auction | State-changing write | Linearizable |
 | List auctions | Read | Client chooses sequential or linearizable (Default: sequential) |
 | Get auction | Read | Client chooses sequential or linearizable (Default: sequential) |
+| Get closure | Read | Client chooses sequential or linearizable (Default: sequential) |
+| Get winning bid | Read | Client chooses sequential or linearizable (Default: sequential) |
 | List bids | Read | Client chooses sequential or linearizable (Default: sequential) |
 | Place bid | Read-modify-write | Linearizable |
 | Close auction | Read-modify-write | Linearizable |
@@ -101,15 +108,14 @@ application state.
 | `GET /v1/auctions/{auctionId}` | `getAuction` | `auctionId`; `consistency` | None | 200: `AuctionReply` | 400: invalid auction ID or consistency; 404: auction missing |
 | `GET /v1/auctions/{auctionId}/bids` | `listBids` | `auctionId`; `consistency` | None | 200: `BidListReply` | 400: invalid auction ID or consistency; 404: auction missing |
 | `POST /v1/auctions/{auctionId}/bids` | `placeBid` | `auctionId` | `PlaceBidBody` | 201: `BidReply` | 400: invalid fields or seller bidding; 404: auction missing; 409: closed auction or bid too low |
-| `PATCH /v1/auctions/{auctionId}` | `closeAuction` | `auctionId` | `CloseAuctionBody` | 200: `AuctionReply`, including repeated close | 400: invalid fields; 403: seller name mismatch; 404: auction missing |
-
-`PATCH` only supports the documented transition to `closed`, it does not provide
-general editing of auction fields.
+| `GET /v1/auctions/{auctionId}/closed` | `getAuctionClosed` | `auctionId`, `consistency` | None | 200 with `true` | 404 for an open or missing auction |
+| `PUT /v1/auctions/{auctionId}/closed` | `closeAuction` | `auctionId` | `CloseAuctionBody` | 201 with `true` on creation, 200 with `true` on repeat | 400 for invalid fields, 403 for a seller name mismatch, 404 for a missing auction |
+| `GET /v1/auctions/{auctionId}/winner` | `getAuctionWinner` | `auctionId`, `consistency` | None | 200 with `BidReply` | 404 for an open or missing auction, or a closed auction without bids |
 
 ### 3.2 Request and response schemas
 
-All listed fields are required except `Auction.highestBid` and
-`Auction.winnerName`, which are omitted when they have no value.
+The auction includes the optional `highestBid` field once a bid has been
+accepted. The schemas below list required fields.
 
 #### Request bodies
 
@@ -117,7 +123,7 @@ All listed fields are required except `Auction.highestBid` and
 | --- | --- |
 | `CreateAuctionBody` | `title`, `description`, `sellerName`: strings; `startingPrice`: uint64 |
 | `PlaceBidBody` | `bidderName`: string; `amount`: uint64 |
-| `CloseAuctionBody` | `sellerName`: string; `status`: the literal `closed` |
+| `CloseAuctionBody` | A seller name string in `sellerName` and the boolean `true` in `closed` |
 
 #### Response bodies
 
@@ -127,6 +133,7 @@ All listed fields are required except `Auction.highestBid` and
 | `AuctionListReply` | `auctions` (array of Auction) |
 | `BidReply` | `bid` (Bid) |
 | `BidListReply` | `bids` (array of Bid) |
+| `AuctionClosure` | JSON boolean `true` |
 | `Problem` | `type`, `title`, `detail`: strings; `status`: integer |
 
 ### 3.3 Errors and status mapping
@@ -138,7 +145,7 @@ Every operation may return 500, 503, or 504; malformed requests return 400.
 | --- | --- | --- |
 | `INVALID_ARGUMENT` | 400 | Invalid request fields or seller attempting to bid |
 | `PERMISSION_DENIED` | 403 | Supplied seller name does not match when closing |
-| `NOT_FOUND` | 404 | Auction does not exist |
+| `NOT_FOUND` | 404 | Missing auction, closure, or winning bid |
 | `FAILED_PRECONDITION` | 409 | Auction is closed or bid does not beat the required amount |
 | `UNAVAILABLE` | 503 | Target gRPC service unavailable |
 | `DEADLINE_EXCEEDED` | 504 | Request deadline exceeded |
@@ -164,6 +171,8 @@ the usual gRPC status mapping.
 | `createAuction` | `CreateAuction` |
 | `listAuctions` | `ListAuctions` |
 | `getAuction` | `GetAuction` |
+| `getAuctionClosed` | `GetAuction` |
+| `getAuctionWinner` | `GetAuction` |
 | `listBids` | `ListBids` |
 | `placeBid` | `PlaceBid` |
 | `closeAuction` | `CloseAuction` |
@@ -194,7 +203,7 @@ encoded by `writeProblem`.
 | --- | --- |
 | REST specification and generated routing | `api/openapi.yaml`, `api/oapi-codegen.yaml`; generated code in `gen/rest/rest.gen.go` |
 | Internal API and generated gRPC bindings | `proto/auction/v1/auction.proto`; generated code in `gen/auction/v1/` |
-| REST-to-RPC calls and response conversion | `internal/httpapi/handlers.go`: the six `Handlers` methods, `auctionFromProto`, and `bidFromProto` |
+| REST-to-RPC calls and response conversion | HTTP handlers and response converters in `internal/httpapi/handlers.go` |
 | Read consistency option and HTTP error mapping | `internal/httpapi/handlers.go`: `toProtoConsistency`, `httpStatusFromGRPC`, and `writeProblem` |
 | Dummy data and business rules | `internal/grpcsvc/server.go`: `dummyAuctions`, `dummyBids`, and the six `Server` RPC methods |
 | Server registration and forwarding target | `cmd/server/main.go`: `main` |

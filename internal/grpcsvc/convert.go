@@ -75,7 +75,11 @@ func closeAuctionResponse(result *auctionv1.Result) (*auctionv1.CloseAuctionResp
 	if err := resultStatus(result); err != nil {
 		return nil, err
 	}
-	return &auctionv1.CloseAuctionResponse{Auction: result.GetAuction()}, nil
+	closed := result.GetCloseAuction()
+	return &auctionv1.CloseAuctionResponse{
+		Auction: closed.GetAuction(),
+		Created: closed.GetCreated(),
+	}, nil
 }
 
 func sendListAuctionsResult(result *auctionv1.Result, stream auctionv1.AuctionService_ListAuctionsServer) error {

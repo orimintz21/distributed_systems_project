@@ -52,13 +52,13 @@ expect 400 POST /v1/auctions -H "$json" -d '{bad json'
 
 expect 200 GET '/v1/auctions?status=open&consistency=linearizable'
 assert_json --argjson book "$book" --argjson clock "$clock" \
-  'any(.auctions[]; .id == $book and .status == "open") and any(.auctions[]; .id == $clock and .status == "open")'
+  'any(.auctions[]; .id == $book) and any(.auctions[]; .id == $clock)'
 expect 400 GET '/v1/auctions?status=unknown'
 expect 400 GET '/v1/auctions?consistency=unknown'
 
 expect 200 GET "/v1/auctions/$book"
 assert_json --argjson id "$book" \
-  '.auction | .id == $id and .title == "Book" and .status == "open" and (has("highestBid") | not)'
+  '.auction | .id == $id and .title == "Book" and (has("highestBid") | not)'
 expect 400 GET /v1/auctions/-1
 expect 400 GET /v1/auctions/18446744073709551616
 expect 400 GET "/v1/auctions/$book?consistency=unknown"
@@ -87,21 +87,28 @@ assert_json --argjson first "$first_bid" --argjson second "$second_bid" \
 expect 200 GET "/v1/auctions/$clock/bids"
 assert_json '.bids == []'
 
-expect 400 PATCH "/v1/auctions/$book" -H "$json" -d '{"sellerName":"seller","status":"open"}'
-expect 403 PATCH "/v1/auctions/$book" -H "$json" -d '{"sellerName":"other","status":"closed"}'
-expect 404 PATCH /v1/auctions/0 -H "$json" -d '{"sellerName":"seller","status":"closed"}'
+expect 400 PUT "/v1/auctions/$book/closed" -H "$json" -d '{"sellerName":"seller","closed":false}'
+expect 403 PUT "/v1/auctions/$book/closed" -H "$json" -d '{"sellerName":"other","closed":true}'
+expect 404 PUT /v1/auctions/0/closed -H "$json" -d '{"sellerName":"seller","closed":true}'
+expect 404 GET "/v1/auctions/$book/closed"
+expect 404 GET "/v1/auctions/$book/winner"
 expect 200 GET "/v1/auctions/$book"
-assert_json '.auction | .status == "open" and .highestBid.amount == 1250 and (has("winnerName") | not)'
-expect 200 PATCH "/v1/auctions/$book" -H "$json" -d '{"sellerName":"seller","status":"closed"}'
-assert_json '.auction | .status == "closed" and .winnerName == "Jo"'
-expect 200 PATCH "/v1/auctions/$book" -H "$json" -d '{"sellerName":"seller","status":"closed"}'
-assert_json '.auction | .status == "closed" and .winnerName == "Jo"'
+assert_json '.auction.highestBid.amount == 1250'
+expect 201 PUT "/v1/auctions/$book/closed" -H "$json" -d '{"sellerName":"seller","closed":true}'
+assert_json '. == true'
+expect 200 PUT "/v1/auctions/$book/closed" -H "$json" -d '{"sellerName":"seller","closed":true}'
+assert_json '. == true'
+expect 200 GET "/v1/auctions/$book/closed?consistency=linearizable"
+assert_json '. == true'
+expect 200 GET "/v1/auctions/$book/winner?consistency=linearizable"
+assert_json --argjson id "$second_bid" '.bid | .id == $id and .bidderName == "Jo" and .amount == 1250'
 expect 409 POST "/v1/auctions/$book/bids" -H "$json" -d '{"bidderName":"Lee","amount":1500}'
-expect 200 PATCH "/v1/auctions/$clock" -H "$json" -d '{"sellerName":"seller","status":"closed"}'
-assert_json '.auction | .status == "closed" and (has("winnerName") | not)'
+expect 201 PUT "/v1/auctions/$clock/closed" -H "$json" -d '{"sellerName":"seller","closed":true}'
+expect 404 GET "/v1/auctions/$clock/winner"
 expect 200 GET '/v1/auctions?status=closed'
 assert_json --argjson book "$book" --argjson clock "$clock" \
-  'any(.auctions[]; .id == $book and .winnerName == "Jo") and any(.auctions[]; .id == $clock)'
+  'any(.auctions[]; .id == $book) and any(.auctions[]; .id == $clock) and
+   all(.auctions[]; (has("status") or has("winnerName") or has("closed")) | not)'
 
 printf '\nSubmitting concurrent auction creates\n'
 pids=

@@ -148,7 +148,7 @@ func withCORS(origin string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
-		h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions { // preflight
 			w.WriteHeader(http.StatusNoContent)

@@ -99,10 +99,9 @@ message PlaceBidResponse {
 message CloseAuctionRequest {
   uint64 auction_id = 1;
   string seller_name = 2;
-  // REST's status=closed is validated by the HTTP handler. The RPC name
-  // already specifies the requested transition, so no status field is needed.
 }
 
 message CloseAuctionResponse {
   Auction auction = 1;
+  bool created = 2; // True if this call closed an open auction.
 }

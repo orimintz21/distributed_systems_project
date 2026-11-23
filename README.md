@@ -105,7 +105,9 @@ To demonstrate an unavailable backend manually, stop n1 while leaving n2 running
 | `GET` | `/v1/auctions/{auctionId}` | Get an auction | `GetAuction` | 200 |
 | `GET` | `/v1/auctions/{auctionId}/bids` | List accepted bids | `ListBids` | 200 |
 | `POST` | `/v1/auctions/{auctionId}/bids` | Place a bid | `PlaceBid` | 201 |
-| `PATCH` | `/v1/auctions/{auctionId}` | Close an auction | `CloseAuction` | 200 |
+| `GET` | `/v1/auctions/{auctionId}/closed` | Read the closure resource | `GetAuction` | 200 |
+| `PUT` | `/v1/auctions/{auctionId}/closed` | Close an auction | `CloseAuction` | 201 on creation, 200 on repeat |
+| `GET` | `/v1/auctions/{auctionId}/winner` | Get the winning bid | `GetAuction` | 200 |
 
 Reads accept `?consistency=sequential|linearizable`, defaulting to `sequential`.
 The choice is passed to gRPC. Writes require linearizability in the service
@@ -113,17 +115,27 @@ contract; consistency guarantees are enforced from Part III.
 
 IDs and prices use `uint64`. Prices are positive integer cents. Request and
 success bodies use `application/json`. `highestBid` is omitted when there are no
-accepted bids. `winnerName` is omitted while open or when closed without bids.
+accepted bids.
+
+To close an auction, send `{"sellerName":"Dana","closed":true}` to its
+`/closed` URL with PUT. The first successful request returns 201 and a repeat
+returns 200. Successful GETs and PUTs on that URL return the JSON boolean
+`true`. An open auction has no closure resource.
+
+The `/winner` URL returns `{"bid":{...}}` with the highest accepted bid once
+the auction is closed. It returns 404 while the auction is open or if it
+closed without bids.
 
 The two list RPCs stream one item per message and set `fin: true` on the
 message carrying the last item. An empty list sends one message with just
 `fin: true`. HTTP handlers collect the items into a JSON array and return
 HTTP 503 if the stream ends without `fin: true`.
 
-Errors use `application/problem+json`: 400 for invalid requests or seller bidding,
-403 for seller mismatch when closing, 404 for unknown auctions, 409 for closed
-auctions or low bids, 500 for unexpected failures, 503 for an unavailable gRPC
-service, and 504 for a gRPC deadline exceeded.
+Errors use `application/problem+json`. The API returns 400 for invalid requests
+or seller bidding, 403 for a seller mismatch when closing, 404 for missing
+auctions, closures, or winning bids, and 409 for bids on closed auctions or low
+bids. It returns 500 for unexpected failures, 503 when the gRPC service is
+unavailable, and 504 when a gRPC deadline expires.
 
 ## API documentation and gRPC inspection
 

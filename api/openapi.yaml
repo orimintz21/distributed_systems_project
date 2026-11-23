@@ -7,8 +7,8 @@ info:
 
     * Reads accept `?consistency=sequential|linearizable` (default: sequential).
       All writes are linearizable.
-    * **GET** reads auctions and bid history. **POST** creates auctions or
-      places bids. **PATCH** closes an auction.
+    * **GET** reads auctions, bid history, closure, and winning bids.
+      **POST** creates auctions or places bids. **PUT** closes an auction.
     * Request and success response bodies use `application/json`.
       Errors use `application/problem+json` (RFC 9457).
 servers:
@@ -29,8 +29,7 @@ paths:
       operationId: createAuction
       summary: Create an auction
       description: |
-        Assign a unique auction ID and return an open auction with no highest
-        bid and no winner.
+        Assign a unique auction ID and return a new open auction.
       requestBody:
         required: true
         content:
@@ -79,8 +78,7 @@ paths:
       operationId: getAuction
       summary: Get an auction
       description: |
-        Return the auction, including its highest accepted bid and final
-        winner, if any.
+        Return the auction, including its highest accepted bid, if any.
       parameters:
         - $ref: '#/components/parameters/Consistency'
       responses:
@@ -94,31 +92,81 @@ paths:
         '500': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
         '504': { $ref: '#/components/responses/Problem' }
-    patch:
+
+  /v1/auctions/{auctionId}/closed:
+    parameters:
+      - $ref: '#/components/parameters/AuctionId'
+    get:
+      tags: [auctions]
+      operationId: getAuctionClosed
+      summary: Get an auction's closure
+      description: |
+        Return true once the auction is closed. An open or unknown auction
+        returns 404.
+      parameters:
+        - $ref: '#/components/parameters/Consistency'
+      responses:
+        '200':
+          description: The auction is closed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuctionClosure' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '504': { $ref: '#/components/responses/Problem' }
+    put:
       tags: [auctions]
       operationId: closeAuction
       summary: Close an auction
       description: |
-        The supplied seller name must match the auction's seller name (403
-        otherwise). Mark the auction closed and finalize the
-        highest accepted bidder as the winner. Without bids, winnerName is omitted.
-
-        Repeating a close request with the correct seller name returns the
-        existing result without changing it. Closed auctions cannot reopen.
-        PATCH supports only the transition to closed, not general field editing.
+        Create the closure resource with value true. The supplied seller name
+        must match the auction's seller name (403 otherwise). Repeating the
+        request with the correct seller returns the existing resource.
+        Closed auctions cannot reopen.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/CloseAuctionBody' }
       responses:
-        '200':
-          description: The closed auction, including for a repeated close request
+        '201':
+          description: The closure was created
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AuctionReply' }
+              schema: { $ref: '#/components/schemas/AuctionClosure' }
+        '200':
+          description: The auction was already closed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuctionClosure' }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '504': { $ref: '#/components/responses/Problem' }
+
+  /v1/auctions/{auctionId}/winner:
+    parameters:
+      - $ref: '#/components/parameters/AuctionId'
+    get:
+      tags: [bids]
+      operationId: getAuctionWinner
+      summary: Get the winning bid
+      description: |
+        Return the highest accepted bid for a closed auction. Return 404 for
+        an unknown auction, an open auction, or a closed auction without bids.
+      parameters:
+        - $ref: '#/components/parameters/Consistency'
+      responses:
+        '200':
+          description: The winning bid
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BidReply' }
+        '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '500': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
@@ -199,9 +247,10 @@ components:
     Problem:
       description: |
         RFC 9457 problem details. 400 indicates a malformed or invalid request;
-        403 a seller name mismatch; 404 an unknown auction; 409 a closed auction
-        or insufficient bid; 500 an unexpected server failure; 503 an unavailable
-        gRPC service; and 504 an exceeded request deadline.
+        403 a seller name mismatch; 404 a missing auction, closure, or winning
+        bid; 409 a closed auction or insufficient bid; 500 an unexpected server
+        failure; 503 an unavailable gRPC service; and 504 an exceeded request
+        deadline.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -215,6 +264,11 @@ components:
     AuctionStatus:
       type: string
       enum: [open, closed]
+      x-enum-varnames: [AuctionStatusOpen, AuctionStatusClosed]
+
+    AuctionClosure:
+      type: boolean
+      enum: [true]
 
     # uint64 is a custom OpenAPI format. Explicit bounds describe the wire
     # contract; x-go-type keeps Go code generation unsigned and full-width.
@@ -239,19 +293,15 @@ components:
     Auction:
       type: object
       description: highestBid is omitted until a bid is accepted.
-      required: [id, title, description, sellerName, startingPrice, status]
+      required: [id, title, description, sellerName, startingPrice]
       properties:
         id: { $ref: '#/components/schemas/UInt64' }
         title: { type: string }
         description: { type: string }
         sellerName: { type: string }
         startingPrice: { $ref: '#/components/schemas/Price' }
-        status: { $ref: '#/components/schemas/AuctionStatus' }
         highestBid:
           $ref: '#/components/schemas/Bid'
-        winnerName:
-          type: string
-          description: Highest bidder when closed; omitted while open or if closed without bids
 
     Bid:
       type: object
@@ -280,13 +330,13 @@ components:
 
     CloseAuctionBody:
       type: object
-      required: [sellerName, status]
+      required: [sellerName, closed]
       properties:
-        sellerName: { type: string }
-        status:
+        sellerName:
           type: string
-          enum: [closed]
-          description: Only explicit closing is supported
+          # Preserve presence so an omitted name cannot match an empty seller name.
+          x-go-type: '*string'
+        closed: { $ref: '#/components/schemas/AuctionClosure' }
 
     AuctionReply:
       type: object

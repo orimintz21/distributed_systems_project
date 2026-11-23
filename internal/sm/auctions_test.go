@@ -67,20 +67,20 @@ func TestAuctionCommands(t *testing.T) {
 		{
 			name:    "close an auction with a winner",
 			command: `close_auction { auction_id: 1 seller_name: "Dana" }`,
-			result:  messageText("auction", closedRadioWithWinner),
+			result:  messageText("close_auction", messageText("auction", closedRadioWithWinner), "created: true"),
 			after:   afterCloseRadio,
 		},
 		{
 			name:    "close an auction with no bids",
 			command: `close_auction { auction_id: 2 seller_name: "Ari" }`,
-			result:  messageText("auction", closedClock),
+			result:  messageText("close_auction", messageText("auction", closedClock), "created: true"),
 			after:   stateText(2, 2, openRadioEntry, auctionEntryText(2, closedClock)),
 		},
 		{
 			name:    "close an already closed auction",
 			before:  afterCloseRadio,
 			command: `close_auction { auction_id: 1 seller_name: "Dana" }`,
-			result:  messageText("auction", closedRadioWithWinner),
+			result:  messageText("close_auction", messageText("auction", closedRadioWithWinner), "created: false"),
 		},
 		{
 			name:    "reject closing with the wrong seller",
