@@ -84,7 +84,7 @@ func (e *Executor) await(ctx context.Context, r request) (*auctionv1.Result, err
 
 // Run executes commands until ctx ends. Call it once per executor.
 func (e *Executor) Run(ctx context.Context) {
-	// TODO 5a: Close the stopped channel when Run returns.
+	defer close(e.stopped)
 	for {
 		r, ok := e.next(ctx)
 		if !ok {
@@ -94,15 +94,19 @@ func (e *Executor) Run(ctx context.Context) {
 	}
 }
 
-func (e *Executor) next(ctx context.Context) (r request, ok bool) {
-
-	// TODO 5b: Receive the next request or return false when ctx ends.
-	<-ctx.Done()
-	return request{}, false
+func (e *Executor) next(ctx context.Context) (request, bool) {
+	if ctx.Err() != nil {
+		return request{}, false
+	}
+	select {
+	case r := <-e.queue:
+		return r, true
+	case <-ctx.Done():
+		return request{}, false
+	}
 }
 
 func (e *Executor) execute(r request) {
-	res := sm.Execute(e.state, r.cmd)
-	// TODO 5c: Send res on the request's buffered reply channel.
-	_ = res
+	result := sm.Execute(e.state, r.cmd)
+	r.reply <- result
 }
