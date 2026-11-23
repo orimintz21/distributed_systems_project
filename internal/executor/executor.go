@@ -29,8 +29,9 @@ func newRequest(cmd *auctionv1.Command) request {
 
 // Executor queues commands for Run, which owns the state.
 type Executor struct {
-	state *auctionv1.State
-	// TODO 2: Add the request queue and a channel that closes when Run stops.
+	state   *auctionv1.State
+	queue   chan request
+	stopped chan struct{}
 }
 
 // New returns an executor over the given state.
